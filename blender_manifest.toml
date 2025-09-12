@@ -1,0 +1,30 @@
+schema_version = "1.0.0"
+
+id = "pexels_image_search"
+name = "Pexels Image Search"
+tagline = "Search, preview, and import high-quality images from Pexels"
+version = "1.0.0"
+type = "add-on"
+
+website = "https://pexels.com"
+maintainer = "CevatAnimate <your-email@example.com>"
+license = [
+  "GPL-3.0-or-later",
+]
+
+blender_version_min = "4.2.0"
+
+[permissions]
+network = "Search and download images from Pexels API"
+files = "Create temporary files for image caching"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  "*.pyo",
+  ".git/",
+  ".gitignore",
+  "*.blend1",
+  "*.blend2",
+]
