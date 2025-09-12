@@ -111,8 +111,8 @@ class PEXELS_PT_Panel(bpy.types.Panel):
             state, 
             "selected_icon", 
             show_labels=False, 
-            scale=7.0, 
-            scale_popup=10.0
+            scale=1.0, 
+            scale_popup=5.0
         )
     
     def _draw_selected_image_details(self, layout, state):
