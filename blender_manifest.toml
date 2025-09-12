@@ -6,7 +6,7 @@ tagline = "Search, preview, and import high-quality images from Pexels"
 version = "1.0.0"
 type = "add-on"
 
-website = "https://pexels.com"
+website = "https://github.com/Cevatanimate/pexels_ext"
 maintainer = "CevatAnimate <cevat@cevatanimate.net>"
 license = ["SPDX:GPL-3.0-or-later"]
 
