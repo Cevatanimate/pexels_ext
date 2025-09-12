@@ -7,10 +7,8 @@ version = "1.0.0"
 type = "add-on"
 
 website = "https://pexels.com"
-maintainer = "CevatAnimate <your-email@example.com>"
-license = [
-  "GPL-3.0-or-later",
-]
+maintainer = "CevatAnimate <cevat@cevatanimate.net>"
+license = ["SPDX:GPL-3.0-or-later"]
 
 blender_version_min = "4.2.0"
 
