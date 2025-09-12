@@ -111,7 +111,7 @@ class PEXELS_PT_Panel(bpy.types.Panel):
             state, 
             "selected_icon", 
             show_labels=False, 
-            scale=1.0, 
+            scale=10.0, 
             scale_popup=5.0
         )
     
@@ -126,6 +126,10 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         
         # Import options section
         self._draw_import_options(layout, selected_item)
+
+        # Overlay preview launcher
+        overlay_row = layout.row(align=True)
+        overlay_row.operator("pexels.overlay_widget", text="Preview Overlay", icon='IMAGE_DATA')
     
     def _draw_image_details(self, layout, item):
         """Draw selected image details"""

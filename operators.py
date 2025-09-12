@@ -6,6 +6,8 @@ Blender operators for Pexels image search and import functionality
 import bpy
 from .api import search_images, download_image, PexelsAPIError, USER_AGENT
 from .utils import load_image_from_url, create_plane_with_image, write_temp_file, preview_manager
+import gpu
+from gpu_extras.batch import batch_for_shader
 
 
 class PEXELS_OT_Search(bpy.types.Operator):
@@ -255,6 +257,149 @@ class PEXELS_OT_OpenPreferences(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PEXELS_UI_ImageWidget:
+    def __init__(self, x, y, width, height, image):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.image = image
+        self._bg_color = (0.08, 0.08, 0.08, 0.85)
+        self._batch_bg = None
+        self._shader_bg = None
+
+    def _build_bg(self, area_h):
+        y_flip = area_h - self.y
+        verts = (
+            (self.x, self.y),
+            (self.x + self.width, self.y),
+            (self.x + self.width, self.y + self.height),
+            (self.x, self.y + self.height),
+        )
+        indices = ((0, 1, 2), (0, 2, 3))
+        shader_name = "UNIFORM_COLOR" if bpy.app.version >= (4, 0, 0) else "2D_UNIFORM_COLOR"
+        self._shader_bg = gpu.shader.from_builtin(shader_name)
+        self._batch_bg = batch_for_shader(self._shader_bg, "TRIS", {"pos": verts}, indices=indices)
+
+    def update(self, context):
+        self._build_bg(context.area.height)
+
+    def draw(self, context):
+        if self._batch_bg is None:
+            self.update(context)
+
+        # Draw background panel
+        gpu.state.blend_set('ALPHA_PREMULT')
+        self._shader_bg.bind()
+        self._shader_bg.uniform_float("color", self._bg_color)
+        self._batch_bg.draw(self._shader_bg)
+        gpu.state.blend_set('NONE')
+
+        # Draw image aspect-fit inside widget rect
+        if self.image and self.image.size[0] and self.image.size[1]:
+            iw = float(self.image.size[0])
+            ih = float(self.image.size[1])
+            if iw <= 0.0 or ih <= 0.0:
+                return
+            scale = min(self.width / iw, self.height / ih)
+            dw = iw * scale
+            dh = ih * scale
+            x0 = self.x + (self.width - dw) * 2.0
+            y0 = self.y + (self.height - dh) * 2.0
+
+            shader = gpu.shader.from_builtin('IMAGE')
+            tex = gpu.texture.from_image(self.image)
+            positions = ((x0, y0), (x0 + dw, y0), (x0 + dw, y0 + dh), (x0, y0 + dh))
+            uvs = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": positions, "texCoord": uvs})
+            gpu.state.blend_set('ALPHA_PREMULT')
+            shader.bind()
+            shader.uniform_sampler('image', tex)
+            batch.draw(shader)
+            gpu.state.blend_set('NONE')
+
+
+class PEXELS_OT_OverlayWidget(bpy.types.Operator):
+    """Floating aspect-correct preview overlay (widget-based)"""
+    bl_idname = "pexels.overlay_widget"
+    bl_label = "Preview Overlay"
+    bl_description = "Show the selected image in a floating overlay"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    _handle = None
+    _timer = None
+    _widget = None
+    _image = None
+
+    @staticmethod
+    def _draw(self_ref, context):
+        if self_ref and self_ref._widget:
+            self_ref._widget.draw(context)
+
+    def _load_selected_image(self, context):
+        state = context.scene.pexels_state
+        item = state.get_selected_item()
+        if not item:
+            return None
+        url = item.thumb_url or item.full_url
+        if not url:
+            return None
+        try:
+            return load_image_from_url(url)
+        except Exception:
+            return None
+
+    def invoke(self, context, event):
+        self._image = self._load_selected_image(context)
+        if not self._image:
+            self.report({'WARNING'}, "No image to preview")
+            return {'CANCELLED'}
+
+        region = context.region
+        panel_margin = 16.0
+        w = max(200.0, min(float(region.width) - 2.0 * panel_margin, 600.0))
+        h = max(150.0, min(float(region.height) * 0.6, 400.0))
+        self._widget = PEXELS_UI_ImageWidget(panel_margin, panel_margin, w, h, self._image)
+        self._widget.update(context)
+
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(
+            PEXELS_OT_OverlayWidget._draw, (self, context), 'WINDOW', 'POST_PIXEL'
+        )
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.05, window=context.window)
+        wm.modal_handler_add(self)
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            self.cancel(context)
+            return {'CANCELLED'}
+        if event.type in {'TIMER', 'MOUSEMOVE'}:
+            if self._widget:
+                self._widget.update(context)
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}
+
+    def cancel(self, context):
+        try:
+            if self._handle is not None:
+                bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+                self._handle = None
+        except Exception:
+            pass
+        try:
+            if self._timer is not None:
+                context.window_manager.event_timer_remove(self._timer)
+                self._timer = None
+        except Exception:
+            pass
+
 # Operator classes for registration
 operator_classes = (
     PEXELS_OT_Search,
@@ -262,4 +407,5 @@ operator_classes = (
     PEXELS_OT_Import,
     PEXELS_OT_ClearCache,
     PEXELS_OT_OpenPreferences,
+    PEXELS_OT_OverlayWidget,
 )
