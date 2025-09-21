@@ -138,15 +138,10 @@ Access advanced options in the collapsible "Settings" panel:
 
 ## 🔄 Version History
 
-### v1.0.0
-- ✨ **Initial modular release**
-- 🎨 **Enhanced UI** with emojis and clear sections
-- 📈 **Increased results** to 50 per search (up from 30)
+### v1.0.2
 - 🔧 **Better pagination** and navigation
-- 💾 **Thumbnail caching** for performance
-- 🛠️ **Advanced settings** panel
+- 🎨 **Better preview system**
 - 📊 **Improved error handling**
-- 🏗️ **Modular architecture** for maintainability
 
 ---
 

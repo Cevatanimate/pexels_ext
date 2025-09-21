@@ -267,6 +267,14 @@ class PEXELS_UI_ImageWidget:
         self._bg_color = (0.08, 0.08, 0.08, 0.85)
         self._batch_bg = None
         self._shader_bg = None
+        # Interaction
+        self._resize_margin = 8.0
+        self._min_width = 120.0
+        self._min_height = 90.0
+        self._hover_edges = {"left": False, "right": False, "top": False, "bottom": False}
+        self._hover_inside = False
+        self._is_dragging = False
+        self._drag_mode = None
 
     def _build_bg(self, area_h):
         y_flip = area_h - self.y
@@ -280,6 +288,27 @@ class PEXELS_UI_ImageWidget:
         shader_name = "UNIFORM_COLOR" if bpy.app.version >= (4, 0, 0) else "2D_UNIFORM_COLOR"
         self._shader_bg = gpu.shader.from_builtin(shader_name)
         self._batch_bg = batch_for_shader(self._shader_bg, "TRIS", {"pos": verts}, indices=indices)
+
+    def contains_point(self, px, py):
+        return (self.x <= px <= self.x + self.width) and (self.y <= py <= self.y + self.height)
+
+    def hit_test_edges(self, px, py):
+        # Returns dict of which edges are hovered: left, right, top, bottom
+        m = self._resize_margin
+        within_x = self.x <= px <= self.x + self.width
+        within_y = self.y <= py <= self.y + self.height
+        left = abs(px - self.x) <= m and within_y
+        right = abs(px - (self.x + self.width)) <= m and within_y
+        bottom = abs(py - self.y) <= m and within_x
+        top = abs(py - (self.y + self.height)) <= m and within_x
+        return {"left": left, "right": right, "top": top, "bottom": bottom}
+
+    def clamp_size(self):
+        # Ensure widget size doesn't go below minimums
+        if self.width < self._min_width:
+            self.width = self._min_width
+        if self.height < self._min_height:
+            self.height = self._min_height
 
     def update(self, context):
         self._build_bg(context.area.height)
@@ -304,8 +333,8 @@ class PEXELS_UI_ImageWidget:
             scale = min(self.width / iw, self.height / ih)
             dw = iw * scale
             dh = ih * scale
-            x0 = self.x + (self.width - dw) * 2.0
-            y0 = self.y + (self.height - dh) * 2.0
+            x0 = self.x + (self.width - dw) * 0.5
+            y0 = self.y + (self.height - dh) * 0.5
 
             shader = gpu.shader.from_builtin('IMAGE')
             tex = gpu.texture.from_image(self.image)
@@ -317,6 +346,26 @@ class PEXELS_UI_ImageWidget:
             shader.uniform_sampler('image', tex)
             batch.draw(shader)
             gpu.state.blend_set('NONE')
+
+        # Draw hover/drag outline
+        outline_color = (0.4, 0.4, 0.4, 0.9)
+        if self._is_dragging:
+            outline_color = (1.0, 0.6, 0.1, 1.0)
+        elif self._hover_inside or any(self._hover_edges.values()):
+            outline_color = (0.2, 0.8, 1.0, 1.0)
+
+        shader_name = "UNIFORM_COLOR" if bpy.app.version >= (4, 0, 0) else "2D_UNIFORM_COLOR"
+        line_shader = gpu.shader.from_builtin(shader_name)
+        line_shader.bind()
+        line_shader.uniform_float("color", outline_color)
+        p0 = (self.x, self.y)
+        p1 = (self.x + self.width, self.y)
+        p2 = (self.x + self.width, self.y + self.height)
+        p3 = (self.x, self.y + self.height)
+        positions = (p0, p1, p2, p3, p0)
+        line_batch = batch_for_shader(line_shader, 'LINE_STRIP', {"pos": positions})
+        gpu.state.line_width_set(2.0)
+        line_batch.draw(line_shader)
 
 
 class PEXELS_OT_OverlayWidget(bpy.types.Operator):
@@ -330,6 +379,12 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
     _timer = None
     _widget = None
     _image = None
+    _is_dragging = False
+    _drag_mode = None  # 'move' or 'resize'
+    _resize_edges = None  # dict with left/right/top/bottom bools
+    _drag_start_mouse = None  # (x, y)
+    _start_rect = None  # (x, y, w, h)
+    _cursor_set = False
 
     @staticmethod
     def _draw(self_ref, context):
@@ -361,6 +416,12 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
         h = max(150.0, min(float(region.height) * 0.6, 400.0))
         self._widget = PEXELS_UI_ImageWidget(panel_margin, panel_margin, w, h, self._image)
         self._widget.update(context)
+        self._is_dragging = False
+        self._drag_mode = None
+        self._resize_edges = {"left": False, "right": False, "top": False, "bottom": False}
+        self._drag_start_mouse = (event.mouse_region_x, event.mouse_region_y)
+        self._start_rect = (self._widget.x, self._widget.y, self._widget.width, self._widget.height)
+        self._cursor_set = False
 
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             PEXELS_OT_OverlayWidget._draw, (self, context), 'WINDOW', 'POST_PIXEL'
@@ -377,7 +438,144 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
         if event.type in {'ESC', 'RIGHTMOUSE'}:
             self.cancel(context)
             return {'CANCELLED'}
-        if event.type in {'TIMER', 'MOUSEMOVE'}:
+
+        # Start drag on left press
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and self._widget:
+            mx, my = event.mouse_region_x, event.mouse_region_y
+            edges = self._widget.hit_test_edges(mx, my)
+            if any(edges.values()):
+                self._is_dragging = True
+                self._drag_mode = 'resize'
+                self._resize_edges = edges
+                self._drag_start_mouse = (mx, my)
+                self._start_rect = (self._widget.x, self._widget.y, self._widget.width, self._widget.height)
+                self._widget._is_dragging = True
+                self._widget._drag_mode = 'resize'
+                return {'RUNNING_MODAL'}
+            elif self._widget.contains_point(mx, my):
+                self._is_dragging = True
+                self._drag_mode = 'move'
+                self._drag_start_mouse = (mx, my)
+                self._start_rect = (self._widget.x, self._widget.y, self._widget.width, self._widget.height)
+                self._widget._is_dragging = True
+                self._widget._drag_mode = 'move'
+                return {'RUNNING_MODAL'}
+
+        # End drag on left release
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and self._is_dragging:
+            self._is_dragging = False
+            self._drag_mode = None
+            if self._widget:
+                self._widget._is_dragging = False
+                self._widget._drag_mode = None
+            # restore hover state after drag end
+            mx, my = event.mouse_region_x, event.mouse_region_y
+            if self._widget:
+                edges = self._widget.hit_test_edges(mx, my)
+                self._widget._hover_edges = edges
+                self._widget._hover_inside = self._widget.contains_point(mx, my) and not any(edges.values())
+            return {'RUNNING_MODAL'}
+
+        # Handle mouse move while dragging
+        if event.type == 'MOUSEMOVE' and self._widget:
+            if self._is_dragging and self._drag_mode:
+                mx, my = event.mouse_region_x, event.mouse_region_y
+                sx, sy = self._drag_start_mouse
+                dx, dy = mx - sx, my - sy
+                x0, y0, w0, h0 = self._start_rect
+
+                # Image aspect for uniform scaling
+                aspect = 1.0
+                if self._image and self._image.size[0] and self._image.size[1]:
+                    iw = float(self._image.size[0])
+                    ih = float(self._image.size[1])
+                    if iw > 0.0 and ih > 0.0:
+                        aspect = iw / ih
+
+                if self._drag_mode == 'move':
+                    self._widget.x = x0 + dx
+                    self._widget.y = y0 + dy
+                elif self._drag_mode == 'resize':
+                    # Keep opposite edge anchored and enforce aspect ratio
+                    cx0 = x0 + w0 * 0.5
+                    cy0 = y0 + h0 * 0.5
+
+                    if self._resize_edges.get('left'):
+                        x1 = x0 + w0
+                        new_x = x0 + dx
+                        new_w = max(self._widget._min_width, x1 - new_x)
+                        new_h = max(self._widget._min_height, new_w / aspect)
+                        new_w = max(self._widget._min_width, new_h * aspect)
+                        self._widget.width = new_w
+                        self._widget.height = new_h
+                        self._widget.x = x1 - new_w
+                        self._widget.y = cy0 - new_h * 0.5
+                    if self._resize_edges.get('right'):
+                        new_w = max(self._widget._min_width, w0 + dx)
+                        new_h = max(self._widget._min_height, new_w / aspect)
+                        new_w = max(self._widget._min_width, new_h * aspect)
+                        self._widget.width = new_w
+                        self._widget.height = new_h
+                        self._widget.x = x0
+                        self._widget.y = cy0 - new_h * 0.5
+
+                    if self._resize_edges.get('bottom'):
+                        y1 = y0 + h0
+                        new_y = y0 + dy
+                        new_h = max(self._widget._min_height, y1 - new_y)
+                        new_w = max(self._widget._min_width, new_h * aspect)
+                        new_h = max(self._widget._min_height, new_w / aspect)
+                        self._widget.height = new_h
+                        self._widget.width = new_w
+                        self._widget.y = y1 - new_h
+                        self._widget.x = cx0 - new_w * 0.5
+                    if self._resize_edges.get('top'):
+                        new_h = max(self._widget._min_height, h0 + dy)
+                        new_w = max(self._widget._min_width, new_h * aspect)
+                        new_h = max(self._widget._min_height, new_w / aspect)
+                        self._widget.height = new_h
+                        self._widget.width = new_w
+                        self._widget.y = y0
+                        self._widget.x = cx0 - new_w * 0.5
+
+                self._widget.clamp_size()
+                self._widget.update(context)
+
+            # Always redraw on mouse move for hover feedback
+            if not self._is_dragging:
+                mx, my = event.mouse_region_x, event.mouse_region_y
+                edges = self._widget.hit_test_edges(mx, my)
+                self._widget._hover_edges = edges
+                self._widget._hover_inside = self._widget.contains_point(mx, my) and not any(edges.values())
+
+                # Set mouse cursor to indicate action
+                try:
+                    if any(edges.values()):
+                        horizontal = edges.get('left') or edges.get('right')
+                        vertical = edges.get('top') or edges.get('bottom')
+                        if horizontal and vertical:
+                            context.window.cursor_modal_set('SCROLL_XY')
+                        elif horizontal:
+                            context.window.cursor_modal_set('SCROLL_X')
+                        else:
+                            context.window.cursor_modal_set('SCROLL_Y')
+                        self._cursor_set = True
+                    elif self._widget._hover_inside:
+                        context.window.cursor_modal_set('HAND')
+                        self._cursor_set = True
+                    else:
+                        if self._cursor_set:
+                            context.window.cursor_modal_restore()
+                            self._cursor_set = False
+                except Exception:
+                    pass
+
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
+        if event.type == 'TIMER':
             if self._widget:
                 self._widget.update(context)
             for area in context.screen.areas:
@@ -397,6 +595,12 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
             if self._timer is not None:
                 context.window_manager.event_timer_remove(self._timer)
                 self._timer = None
+        except Exception:
+            pass
+        try:
+            if self._cursor_set:
+                context.window.cursor_modal_restore()
+                self._cursor_set = False
         except Exception:
             pass
 

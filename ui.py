@@ -61,6 +61,10 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         search_col = search_box.column(align=True)
         search_col.prop(state, "query", text="Keywords")
         search_col.operator("pexels.search", text="Search", icon='VIEWZOOM')
+
+        # Overlay preview launcher
+        overlay_row = layout.row(align=True)
+        overlay_row.operator("pexels.overlay_widget", text="Preview Overlay", icon='IMAGE_DATA')
         
         # Results info and pagination
         if state.total_results > 0:
@@ -126,10 +130,6 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         
         # Import options section
         self._draw_import_options(layout, selected_item)
-
-        # Overlay preview launcher
-        overlay_row = layout.row(align=True)
-        overlay_row.operator("pexels.overlay_widget", text="Preview Overlay", icon='IMAGE_DATA')
     
     def _draw_image_details(self, layout, item):
         """Draw selected image details"""
@@ -212,9 +212,9 @@ class PEXELS_PT_Settings(bpy.types.Panel):
         status_box = layout.box()
         
         if prefs.api_key:
-            status_box.label(text="✅ API Key Configured", icon='CHECKMARK')
+            status_box.label(text="✅ API Key Configured", icon='NONE')
         else:
-            status_box.label(text="❌ No API Key", icon='CANCEL')
+            status_box.label(text="❌ No API Key", icon='NONE')
             status_box.operator("pexels.open_preferences", text="Set API Key")
     
     def _draw_quick_settings(self, layout, prefs):
