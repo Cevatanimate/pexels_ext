@@ -70,11 +70,30 @@ def pexels_enum_items(self, context):
 
 class PEXELS_State(bpy.types.PropertyGroup):
     """Main state property group for the Pexels addon"""
-    
+
     query: bpy.props.StringProperty(
         name="Search Query",
         description="Enter keywords to search for images (e.g., 'nature', 'architecture', 'abstract')",
         default=""
+    )
+
+    # Rate limit properties
+    rate_limit: bpy.props.IntProperty(
+        name="Rate Limit",
+        description="Total number of requests allowed per month",
+        default=20000
+    )
+
+    rate_remaining: bpy.props.IntProperty(
+        name="Rate Remaining",
+        description="Number of requests remaining this month",
+        default=20000
+    )
+
+    rate_reset_timestamp: bpy.props.IntProperty(
+        name="Rate Reset Timestamp",
+        description="UNIX timestamp when the monthly limit resets",
+        default=0
     )
     
     page: bpy.props.IntProperty(

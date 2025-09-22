@@ -71,6 +71,9 @@ class PEXELS_PT_Panel(bpy.types.Panel):
             self._draw_results_info(search_box, state)
             self._draw_pagination_controls(search_box, state)
             self._draw_settings_controls(search_box, prefs)
+
+        # Rate limit indicator
+        self._draw_rate_limit_indicator(search_box, state)
     
     def _draw_results_info(self, layout, state):
         """Draw results information"""
@@ -99,6 +102,33 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         settings_row = layout.row(align=True)
         settings_row.prop(prefs, "max_results", text="Per Page")
         settings_row.operator("pexels.clear_cache", text="", icon='FILE_REFRESH')
+
+    def _draw_rate_limit_indicator(self, layout, state):
+        """Draw rate limit status indicator"""
+        # Only show if we have rate limit data
+        if state.rate_limit <= 0:
+            return
+
+        rate_row = layout.row(align=True)
+
+        # Calculate usage percentage
+        usage_percent = ((state.rate_limit - state.rate_remaining) / state.rate_limit) * 100
+
+        # Choose icon and color based on remaining requests
+        if state.rate_remaining == 0:
+            icon = 'ERROR'
+            status_text = "Rate limit exceeded"
+        elif usage_percent >= 90:
+            icon = 'CANCEL'
+            status_text = f"⚠ {state.rate_remaining} requests left"
+        elif usage_percent >= 75:
+            icon = 'INFO'
+            status_text = f"📊 {state.rate_remaining} requests left"
+        else:
+            icon = 'NONE'
+            status_text = f"✅ {state.rate_remaining}/{state.rate_limit} requests"
+
+        rate_row.label(text=status_text, icon=icon)
     
     def _draw_loading_indicator(self, layout):
         """Draw loading indicator"""

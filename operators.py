@@ -39,34 +39,37 @@ class PEXELS_OT_Search(bpy.types.Operator):
     def _perform_search(self, context, state, prefs):
         """Perform the actual search operation"""
         state.is_loading = True
-        
+
         try:
             # Clear previous results
             state.clear_results()
             preview_manager.ensure_previews()
-            
+
             # Search for images
-            results = search_images(
+            results, response_headers = search_images(
                 api_key=prefs.api_key,
                 query=state.query,
                 page=state.page,
                 per_page=prefs.max_results
             )
-            
+
             # Process results
             self._process_search_results(state, results, prefs.cache_thumbnails)
-            
+
+            # Store rate limit information
+            self._update_rate_limits(state, response_headers)
+
             # Set default selection
             if state.items:
                 state.selected_icon = str(state.items[0].item_id)
-            
+
             # Report success
             photos_count = len(state.items)
             total_count = state.total_results
             self.report({'INFO'}, f"Found {photos_count} images (Total: {total_count})")
-            
+
             return {'FINISHED'}
-            
+
         except PexelsAPIError as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
@@ -117,6 +120,25 @@ class PEXELS_OT_Search(bpy.types.Operator):
             preview_manager.load_preview(str(item.item_id), thumb_path)
         except Exception:
             # Ignore thumbnail loading failures
+            pass
+
+    def _update_rate_limits(self, state, headers):
+        """Update rate limit information from response headers"""
+        try:
+            # Extract rate limit headers
+            limit_str = headers.get('X-Ratelimit-Limit')
+            remaining_str = headers.get('X-Ratelimit-Remaining')
+            reset_str = headers.get('X-Ratelimit-Reset')
+
+            # Update state properties if headers are present
+            if limit_str:
+                state.rate_limit = int(limit_str)
+            if remaining_str:
+                state.rate_remaining = int(remaining_str)
+            if reset_str:
+                state.rate_reset_timestamp = int(reset_str)
+        except (ValueError, TypeError):
+            # Ignore invalid header values
             pass
 
 
