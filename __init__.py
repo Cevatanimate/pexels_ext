@@ -3,7 +3,8 @@
 Pexels Image Search - Blender Extension
 
 Search, preview, and import high-quality images from Pexels.
-Features background task processing, caching, and progress tracking.
+Features background task processing, caching, progress tracking,
+favorites management, and comprehensive cache browsing.
 """
 
 import bpy
@@ -21,6 +22,12 @@ from .network_manager import network_manager
 from .progress_tracker import progress_tracker
 from .logger import logger, LogLevel
 
+# Import new cache system components
+from .database_manager import database_manager
+from .favorites_manager import favorites_manager
+from .history_manager import history_manager
+from . import ui_cache_browser
+
 # Collect all classes for registration
 all_classes = property_classes + operator_classes + ui_classes
 
@@ -37,6 +44,18 @@ def _initialize_managers():
         cache_dir = cache_manager.get_cache_directory()
         logger.debug(f"Cache manager initialized, directory: {cache_dir}")
         
+        # Database manager initializes itself on first access
+        db_path = database_manager.get_database_path()
+        logger.debug(f"Database manager initialized, path: {db_path}")
+        
+        # Favorites manager initializes itself on first access
+        fav_count = favorites_manager.get_count()
+        logger.debug(f"Favorites manager initialized, {fav_count} favorites")
+        
+        # History manager initializes itself on first access
+        history_count = history_manager.get_count()
+        logger.debug(f"History manager initialized, {history_count} entries")
+        
         # Network manager initializes itself on first access
         # Just verify it's accessible
         online_status = network_manager.is_online_access_enabled()
@@ -52,6 +71,16 @@ def _initialize_managers():
         
         # Clean up old temp files from previous sessions
         cleanup_old_temp_files(max_age_hours=24.0)
+        
+        # Run cache cleanup if auto-cleanup is enabled
+        try:
+            policy = cache_manager.get_retention_policy()
+            if policy.auto_cleanup_enabled:
+                cache_manager.full_cleanup()
+                history_manager.cleanup_old(policy.history_retention_days)
+                logger.debug("Auto-cleanup completed")
+        except Exception as e:
+            logger.warning(f"Auto-cleanup failed: {e}")
         
         logger.info("All managers initialized successfully")
         
@@ -101,6 +130,13 @@ def _shutdown_managers():
         except Exception as e:
             logger.warning(f"Error cleaning temp files: {e}")
         
+        # Close database connection
+        try:
+            database_manager.close()
+            logger.debug("Database manager closed")
+        except Exception as e:
+            logger.warning(f"Error closing database: {e}")
+        
         # Note: We don't clear the cache manager on unregister
         # to preserve cached data for next session
         
@@ -125,6 +161,9 @@ def register():
         for cls in all_classes:
             bpy.utils.register_class(cls)
         
+        # Register cache browser UI
+        ui_cache_browser.register()
+        
         # Add state property to scene
         bpy.types.Scene.pexels_state = bpy.props.PointerProperty(type=PEXELS_State)
         
@@ -143,6 +182,12 @@ def unregister():
         # Remove scene property
         if hasattr(bpy.types.Scene, "pexels_state"):
             del bpy.types.Scene.pexels_state
+        
+        # Unregister cache browser UI first
+        try:
+            ui_cache_browser.unregister()
+        except Exception as e:
+            logger.warning(f"Error unregistering cache browser: {e}")
         
         # Unregister all classes in reverse order
         for cls in reversed(all_classes):

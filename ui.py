@@ -3,7 +3,8 @@
 User interface panels and components for the Pexels addon.
 
 Provides panels for searching, browsing, and importing images from Pexels
-with proper null checks, error state display, and progress indicators.
+with proper null checks, error state display, progress indicators,
+and favorites management integration.
 """
 
 import bpy
@@ -11,6 +12,14 @@ import bpy
 from .progress_tracker import progress_tracker, ProgressStatus
 from .logger import logger
 from .utils import format_eta, format_speed, truncate_filename, format_progress_items
+
+# Import favorites manager for favorite status checking
+try:
+    from .operators import is_favorite, ENHANCED_CACHING_AVAILABLE
+except ImportError:
+    ENHANCED_CACHING_AVAILABLE = False
+    def is_favorite(pexels_id):
+        return False
 
 
 def get_preferences(context):
@@ -311,7 +320,23 @@ class PEXELS_PT_Panel(bpy.types.Panel):
     def _draw_image_details(self, layout, item):
         """Draw selected image details."""
         detail_box = layout.box()
-        detail_box.label(text="📋 Image Details", icon='INFO')
+        
+        # Header row with favorite button
+        header_row = detail_box.row()
+        header_row.label(text="📋 Image Details", icon='INFO')
+        
+        # Favorite toggle button
+        if ENHANCED_CACHING_AVAILABLE:
+            is_fav = is_favorite(item.item_id)
+            fav_icon = 'SOLO_ON' if is_fav else 'SOLO_OFF'
+            fav_text = "" if is_fav else ""
+            fav_op = header_row.operator(
+                "pexels.toggle_favorite",
+                text=fav_text,
+                icon=fav_icon,
+                emboss=True
+            )
+            fav_op.item_id = item.item_id
         
         info_col = detail_box.column(align=True)
         info_col.label(text=f"ID: {item.item_id}")
@@ -319,6 +344,10 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         
         if item.photographer:
             info_col.label(text=f"📸 Photo by: {item.photographer}")
+        
+        # Show favorite status
+        if ENHANCED_CACHING_AVAILABLE and is_favorite(item.item_id):
+            info_col.label(text="⭐ In Favorites", icon='SOLO_ON')
     
     def _draw_import_options(self, layout, item):
         """Draw import options for selected image."""
@@ -327,19 +356,37 @@ class PEXELS_PT_Panel(bpy.types.Panel):
         
         # Primary import button (as plane)
         plane_op = import_box.operator(
-            "pexels.import_image", 
-            text="Import as Plane", 
+            "pexels.import_image",
+            text="Import as Plane",
             icon='MESH_PLANE'
         )
         plane_op.as_plane = True
         
         # Secondary import button (image only)
         image_op = import_box.operator(
-            "pexels.import_image", 
-            text="Import Image Only", 
+            "pexels.import_image",
+            text="Import Image Only",
             icon='IMAGE_DATA'
         )
         image_op.as_plane = False
+        
+        # Add to favorites button (if not already favorited)
+        if ENHANCED_CACHING_AVAILABLE:
+            import_box.separator()
+            is_fav = is_favorite(item.item_id)
+            if is_fav:
+                fav_op = import_box.operator(
+                    "pexels.toggle_favorite",
+                    text="Remove from Favorites",
+                    icon='SOLO_ON'
+                )
+            else:
+                fav_op = import_box.operator(
+                    "pexels.toggle_favorite",
+                    text="Add to Favorites",
+                    icon='SOLO_OFF'
+                )
+            fav_op.item_id = item.item_id
     
     def _draw_no_results_message(self, layout):
         """Draw no results found message."""
@@ -426,6 +473,19 @@ class PEXELS_PT_Settings(bpy.types.Panel):
             stats_col.label(text=f"Memory: {stats['memory_items']} items")
             stats_col.label(text=f"Disk: {stats['disk_size_mb']:.1f} MB")
             stats_col.label(text=f"Hit rate: {stats['hit_rate_percent']:.1f}%")
+            
+            # Show search cache and favorites count if available
+            if 'search_cache_items' in stats:
+                stats_col.label(text=f"Cached searches: {stats['search_cache_items']}")
+            
+            # Show favorites count
+            if ENHANCED_CACHING_AVAILABLE:
+                try:
+                    from .favorites_manager import favorites_manager
+                    fav_count = favorites_manager.get_count()
+                    stats_col.label(text=f"Favorites: {fav_count}")
+                except Exception:
+                    pass
         except Exception:
             pass
         
