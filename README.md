@@ -23,7 +23,7 @@
 ### Prerequisites
 - **Blender 4.2** or newer
 - **Internet connection** for API access
-- **Free Pexels API key** ([Get one here](https://www.pexels.com/api/new/))
+- **Free Pexels API key** ([Get one here](https://www.pexels.com/api/))
 
 ### Install Steps
 1. **Download** this extension folder (`pexels_ext`)
@@ -36,7 +36,7 @@
 ## ⚙️ Setup
 
 ### 1. Get API Key
-1. Visit [https://www.pexels.com/api/new/](https://www.pexels.com/api/new/)
+1. Visit [https://www.pexels.com/api/](https://www.pexels.com/api/)
 2. Create a free account or log in
 3. Copy your API key
 
@@ -67,20 +67,6 @@
 ### Import Options
 - **Import as Plane** - Creates a mesh plane with the image as texture
 - **Import Image Only** - Adds image to Blender's image library
-
-## 🏗️ Project Structure
-
-```
-pexels_ext/
-├── 📄 __init__.py           # Main entry point and registration
-├── 🌐 api.py               # Pexels API communication
-├── ⚙️ operators.py         # Blender operators (Search, Import, etc.)
-├── 📊 properties.py        # Data structures and preferences  
-├── 🎨 ui.py                # User interface panels
-├── 🛠️ utils.py             # Utilities and helper functions
-├── 📋 blender_manifest.toml # Extension metadata
-└── 📖 README.md            # This documentation
-```
 
 ## 🔧 Advanced Features
 
@@ -138,10 +124,10 @@ Access advanced options in the collapsible "Settings" panel:
 
 ## 🔄 Version History
 
-### v1.0.2
-- 🔧 **Better pagination** and navigation
+### v1.0.3
+- 🔧 **Better Caching** and control
 - 🎨 **Better preview system**
-- 📊 **Improved error handling**
+- 📊 **Improved Download Feedback**
 
 ---
 
