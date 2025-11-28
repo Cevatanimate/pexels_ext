@@ -4,6 +4,7 @@ Blender operators for Pexels image search and import functionality.
 
 Provides operators for searching, importing, and managing Pexels images
 with background task support, progress tracking, and proper error handling.
+Includes favorites management and search history integration.
 """
 
 import bpy
@@ -37,6 +38,16 @@ from .utils import (
     format_speed,
     truncate_filename
 )
+
+# Import new managers for favorites and history
+try:
+    from .favorites_manager import favorites_manager
+    from .history_manager import history_manager
+    ENHANCED_CACHING_AVAILABLE = True
+except ImportError:
+    ENHANCED_CACHING_AVAILABLE = False
+    favorites_manager = None
+    history_manager = None
 
 
 def get_preferences(context):
@@ -134,6 +145,17 @@ class PEXELS_OT_Search(bpy.types.Operator):
             return {'CANCELLED'}
         
         logger.info("Starting search", query=state.query, page=state.page)
+        
+        # Check for cached search results first
+        if ENHANCED_CACHING_AVAILABLE:
+            cached_result = cache_manager.get_cached_search(
+                state.query, state.page, prefs.max_results
+            )
+            if cached_result:
+                logger.info("Using cached search results", query=state.query)
+                self._process_cached_results(state, context, cached_result)
+                self.report({'INFO'}, f"Loaded {len(cached_result.photos)} cached results")
+                return {'FINISHED'}
         
         # Clear previous results
         state.clear_results()
@@ -267,6 +289,40 @@ class PEXELS_OT_Search(bpy.types.Operator):
         
         return results, headers, thumbnail_paths
     
+    def _process_cached_results(self, state, context, cached_result):
+        """Process cached search results."""
+        from .models import PhotoData
+        
+        state.clear_results()
+        state.total_results = cached_result.total_results
+        
+        for photo in cached_result.photos:
+            item = state.items.add()
+            item.item_id = photo.id
+            item.photographer = photo.photographer
+            item.width = photo.width
+            item.height = photo.height
+            item.thumb_url = photo.src.get('medium', photo.src.get('small', ''))
+            item.full_url = photo.src.get('large2x', photo.src.get('original', ''))
+            
+            # Try to load preview from cache
+            photo_id = str(photo.id)
+            thumb_url = item.thumb_url
+            if thumb_url:
+                cached_path = cache_manager.get_file_path(thumb_url, variant="thumb")
+                if cached_path:
+                    try:
+                        preview_manager.load_preview(photo_id, cached_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to load cached preview for {photo_id}", exception=e)
+        
+        # Set default selection
+        if state.items:
+            self._set_default_selection(state, context)
+        
+        # Force UI update
+        self._redraw_ui(context)
+    
     def _on_search_complete(self, context, task):
         """Handle search completion on main thread."""
         try:
@@ -282,6 +338,33 @@ class PEXELS_OT_Search(bpy.types.Operator):
             
             # Update rate limits
             self._update_rate_limits(state, headers)
+            
+            # Cache search results for future use
+            if ENHANCED_CACHING_AVAILABLE:
+                try:
+                    photos = results.get("photos", []) or []
+                    total_results = results.get("total_results", 0)
+                    prefs = get_preferences(context)
+                    
+                    cached_result = cache_manager.cache_search_result(
+                        query=state.query,
+                        page=state.page,
+                        per_page=prefs.max_results if prefs else 50,
+                        photos=photos,
+                        total_results=total_results
+                    )
+                    
+                    # Record in search history
+                    if cached_result and history_manager:
+                        history_manager.record_search(
+                            query=state.query,
+                            result_count=total_results,
+                            page=state.page,
+                            per_page=prefs.max_results if prefs else 50,
+                            cached_result_id=cached_result.id
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to cache search results: {e}")
             
             # Set default selection
             if state.items:
@@ -1469,6 +1552,226 @@ class PEXELS_OT_CancelCaching(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PEXELS_OT_ToggleFavorite(bpy.types.Operator):
+    """Toggle favorite status for selected image"""
+    
+    bl_idname = "pexels.toggle_favorite"
+    bl_label = "Toggle Favorite"
+    bl_description = "Add or remove the selected image from favorites"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    item_id: bpy.props.IntProperty(
+        name="Item ID",
+        description="Pexels image ID to toggle",
+        default=0
+    )
+    
+    def execute(self, context):
+        """Execute favorite toggle."""
+        if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+            self.report({'ERROR'}, "Favorites feature not available")
+            return {'CANCELLED'}
+        
+        state = get_state(context)
+        if state is None:
+            self.report({'ERROR'}, "Addon state not available")
+            return {'CANCELLED'}
+        
+        # Get item to toggle
+        item = None
+        if self.item_id > 0:
+            # Find item by ID
+            for i in state.items:
+                if i.item_id == self.item_id:
+                    item = i
+                    break
+        else:
+            # Use selected item
+            item = state.get_selected_item()
+        
+        if not item:
+            self.report({'WARNING'}, "No image selected")
+            return {'CANCELLED'}
+        
+        # Toggle favorite
+        is_favorite, favorite_item = favorites_manager.toggle_favorite(
+            pexels_id=item.item_id,
+            thumb_url=item.thumb_url,
+            full_url=item.full_url,
+            photographer=item.photographer,
+            width=item.width,
+            height=item.height
+        )
+        
+        if is_favorite:
+            logger.info(f"Added to favorites: {item.item_id}")
+            self.report({'INFO'}, f"Added to favorites: {item.photographer}'s image")
+        else:
+            logger.info(f"Removed from favorites: {item.item_id}")
+            self.report({'INFO'}, f"Removed from favorites")
+        
+        # Force UI update
+        self._redraw_ui(context)
+        
+        return {'FINISHED'}
+    
+    def _redraw_ui(self, context):
+        """Force UI redraw."""
+        try:
+            if context and hasattr(context, 'screen') and context.screen:
+                for area in context.screen.areas:
+                    area.tag_redraw()
+        except Exception:
+            pass
+
+
+class PEXELS_OT_ImportFavorite(bpy.types.Operator):
+    """Import a favorite image into Blender"""
+    
+    bl_idname = "pexels.import_favorite"
+    bl_label = "Import Favorite"
+    bl_description = "Import a favorite image into Blender"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    pexels_id: bpy.props.IntProperty(
+        name="Pexels ID",
+        description="Pexels image ID to import",
+        default=0
+    )
+    
+    as_plane: bpy.props.BoolProperty(
+        name="Import as Plane",
+        description="Create a plane object with the image texture applied",
+        default=True
+    )
+    
+    plane_size: bpy.props.FloatProperty(
+        name="Plane Size",
+        description="Height of the created plane in Blender units",
+        default=2.0,
+        min=0.01,
+        max=100.0
+    )
+    
+    def execute(self, context):
+        """Execute favorite import."""
+        if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+            self.report({'ERROR'}, "Favorites feature not available")
+            return {'CANCELLED'}
+        
+        if self.pexels_id <= 0:
+            self.report({'WARNING'}, "No favorite selected")
+            return {'CANCELLED'}
+        
+        # Get favorite
+        favorite = favorites_manager.get_favorite(self.pexels_id)
+        if not favorite:
+            self.report({'ERROR'}, "Favorite not found")
+            return {'CANCELLED'}
+        
+        # Check online access if not cached
+        cached_path = cache_manager.get_file_path(favorite.full_url, variant="full")
+        if not cached_path:
+            if not check_online_access():
+                self.report({'ERROR'}, get_online_access_disabled_message())
+                return {'CANCELLED'}
+            
+            if not network_manager.is_online():
+                self.report({'ERROR'}, "No network connectivity. Check your internet connection.")
+                return {'CANCELLED'}
+        
+        logger.info("Importing favorite", pexels_id=self.pexels_id)
+        
+        # Record use
+        favorites_manager.record_use(self.pexels_id)
+        
+        # Use the standard import operator
+        # First, we need to download/get the image
+        try:
+            if cached_path:
+                image_path = cached_path
+            else:
+                # Download image
+                image_data = download_image(
+                    favorite.full_url,
+                    headers={"User-Agent": USER_AGENT}
+                )
+                
+                # Save to cache
+                cache_manager.put(
+                    favorite.full_url,
+                    image_data,
+                    variant="full",
+                    metadata={"image_id": str(self.pexels_id)}
+                )
+                
+                image_path = cache_manager.get_file_path(favorite.full_url, variant="full")
+                if not image_path:
+                    # Fallback to temp file
+                    image_path = write_temp_file(f"pexels_{self.pexels_id}.jpg", image_data)
+            
+            # Load image into Blender
+            image = bpy.data.images.load(image_path, check_existing=False)
+            image.name = f"Pexels_{self.pexels_id}"
+            
+            # Create plane if requested
+            if self.as_plane:
+                plane_obj = create_plane_with_image(image, size=self.plane_size)
+                if plane_obj:
+                    plane_obj.select_set(True)
+                    context.view_layer.objects.active = plane_obj
+            
+            self.report({'INFO'}, f"Imported: {favorite.photographer}'s image")
+            return {'FINISHED'}
+            
+        except Exception as e:
+            logger.error("Failed to import favorite", exception=e)
+            self.report({'ERROR'}, f"Import failed: {e}")
+            return {'CANCELLED'}
+
+
+class PEXELS_OT_CheckFavoriteStatus(bpy.types.Operator):
+    """Check if current selection is a favorite"""
+    
+    bl_idname = "pexels.check_favorite_status"
+    bl_label = "Check Favorite Status"
+    bl_description = "Check if the selected image is in favorites"
+    bl_options = {'INTERNAL'}
+    
+    @classmethod
+    def poll(cls, context):
+        return ENHANCED_CACHING_AVAILABLE and favorites_manager is not None
+    
+    def execute(self, context):
+        state = get_state(context)
+        if state is None:
+            return {'CANCELLED'}
+        
+        item = state.get_selected_item()
+        if not item:
+            return {'CANCELLED'}
+        
+        is_fav = favorites_manager.is_favorite(item.item_id)
+        self.report({'INFO'}, f"Favorite: {'Yes' if is_fav else 'No'}")
+        
+        return {'FINISHED'}
+
+
+def is_favorite(pexels_id: int) -> bool:
+    """
+    Check if an image is in favorites.
+    
+    Args:
+        pexels_id: Pexels image ID
+        
+    Returns:
+        True if favorited
+    """
+    if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+        return False
+    return favorites_manager.is_favorite(pexels_id)
+
+
 # Operator classes for registration
 operator_classes = (
     PEXELS_OT_Search,
@@ -1480,4 +1783,7 @@ operator_classes = (
     PEXELS_OT_OverlayWidget,
     PEXELS_OT_CacheImages,
     PEXELS_OT_CancelCaching,
+    PEXELS_OT_ToggleFavorite,
+    PEXELS_OT_ImportFavorite,
+    PEXELS_OT_CheckFavoriteStatus,
 )
