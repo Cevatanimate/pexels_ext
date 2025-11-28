@@ -5,6 +5,21 @@ Pexels Image Search - Blender Extension
 Search, preview, and import high-quality images from Pexels.
 Features background task processing, caching, progress tracking,
 favorites management, and comprehensive cache browsing.
+
+IMPORTANT FIX (v1.1.0):
+This version includes a comprehensive fix for the StructRNA error:
+"TaskManager Callback error: StructRNA of type PEXELS_OT_Search has been removed"
+
+The error occurred because:
+1. Blender operators are transient - destroyed after execute() returns
+2. Async callbacks captured 'self' (operator instance) in lambda closures
+3. When callbacks fired, the operator was already destroyed
+
+The fix implements:
+1. Static callback handlers in callback_handler.py
+2. CallbackContext dataclass to pass operation data without capturing 'self'
+3. Safe callback scheduling with context validation in task_manager.py
+4. Proper error handling and user feedback in UI
 """
 
 import bpy
@@ -21,6 +36,9 @@ from .cache_manager import cache_manager
 from .network_manager import network_manager
 from .progress_tracker import progress_tracker
 from .logger import logger, LogLevel
+
+# Import callback handler module (critical for StructRNA fix)
+from . import callback_handler
 
 # Import new cache system components
 from .database_manager import database_manager

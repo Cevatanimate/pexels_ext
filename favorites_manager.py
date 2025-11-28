@@ -35,7 +35,7 @@ class FavoriteFilter:
     min_width: Optional[int] = None
     min_height: Optional[int] = None
     search_query: Optional[str] = None
-    sort_by: SortOrder = SortOrder.DATE_DESC
+    sort_by: SortOrder = SortOrder.NEWEST_FIRST
     
     def matches(self, favorite: FavoriteItem) -> bool:
         """Check if a favorite matches this filter."""
@@ -453,7 +453,7 @@ class FavoritesManager:
     
     def get_all(
         self,
-        sort_by: SortOrder = SortOrder.DATE_DESC,
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST,
         limit: Optional[int] = None,
         offset: int = 0
     ) -> List[FavoriteItem]:
@@ -482,10 +482,29 @@ class FavoritesManager:
             
             return favorites
     
+    def get_all_favorites(
+        self,
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[FavoriteItem]:
+        """
+        Get all favorites (alias for get_all for compatibility).
+        
+        Args:
+            sort_by: Sort order
+            limit: Maximum number to return
+            offset: Number to skip
+            
+        Returns:
+            List of favorites
+        """
+        return self.get_all(sort_by=sort_by, limit=limit, offset=offset)
+    
     def get_by_category(
         self,
         category_id: str,
-        sort_by: SortOrder = SortOrder.DATE_DESC
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST
     ) -> List[FavoriteItem]:
         """
         Get favorites in a specific category.
@@ -506,7 +525,7 @@ class FavoritesManager:
         self,
         tags: List[str],
         match_all: bool = False,
-        sort_by: SortOrder = SortOrder.DATE_DESC
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST
     ) -> List[FavoriteItem]:
         """
         Get favorites with specific tags.
@@ -536,7 +555,7 @@ class FavoritesManager:
     def get_by_photographer(
         self,
         photographer: str,
-        sort_by: SortOrder = SortOrder.DATE_DESC
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST
     ) -> List[FavoriteItem]:
         """
         Get favorites by a specific photographer.
@@ -559,7 +578,7 @@ class FavoritesManager:
     def search(
         self,
         query: str,
-        sort_by: SortOrder = SortOrder.DATE_DESC
+        sort_by: SortOrder = SortOrder.NEWEST_FIRST
     ) -> List[FavoriteItem]:
         """
         Search favorites by query.
@@ -611,7 +630,7 @@ class FavoritesManager:
                 f for f in self._favorites_cache.values()
                 if f.added_at >= cutoff
             ]
-            favorites = self._sort_favorites(favorites, SortOrder.DATE_DESC)
+            favorites = self._sort_favorites(favorites, SortOrder.NEWEST_FIRST)
             return favorites[:limit]
     
     def get_most_used(self, limit: int = 50) -> List[FavoriteItem]:
@@ -629,7 +648,7 @@ class FavoritesManager:
                 f for f in self._favorites_cache.values()
                 if f.use_count > 0
             ]
-            favorites = self._sort_favorites(favorites, SortOrder.USE_COUNT_DESC)
+            favorites = self._sort_favorites(favorites, SortOrder.MOST_USED)
             return favorites[:limit]
     
     def _sort_favorites(
@@ -638,18 +657,18 @@ class FavoritesManager:
         sort_by: SortOrder
     ) -> List[FavoriteItem]:
         """Sort favorites by specified order."""
-        if sort_by == SortOrder.DATE_DESC:
+        if sort_by == SortOrder.NEWEST_FIRST:
             return sorted(favorites, key=lambda f: f.added_at, reverse=True)
-        elif sort_by == SortOrder.DATE_ASC:
+        elif sort_by == SortOrder.OLDEST_FIRST:
             return sorted(favorites, key=lambda f: f.added_at)
         elif sort_by == SortOrder.NAME_ASC:
             return sorted(favorites, key=lambda f: f.photographer.lower())
         elif sort_by == SortOrder.NAME_DESC:
             return sorted(favorites, key=lambda f: f.photographer.lower(), reverse=True)
-        elif sort_by == SortOrder.USE_COUNT_DESC:
+        elif sort_by == SortOrder.MOST_USED:
             return sorted(favorites, key=lambda f: f.use_count, reverse=True)
-        elif sort_by == SortOrder.USE_COUNT_ASC:
-            return sorted(favorites, key=lambda f: f.use_count)
+        elif sort_by == SortOrder.RECENTLY_USED:
+            return sorted(favorites, key=lambda f: f.last_used or 0, reverse=True)
         elif sort_by == SortOrder.SIZE_DESC:
             return sorted(favorites, key=lambda f: f.width * f.height, reverse=True)
         elif sort_by == SortOrder.SIZE_ASC:

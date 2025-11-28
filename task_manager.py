@@ -3,6 +3,10 @@ Background Task Manager for Pexels Extension.
 
 Provides a thread-safe task queue system with worker thread pool,
 priority levels, cancellation support, and main thread callbacks.
+
+IMPORTANT: This module implements safe callback handling to prevent
+StructRNA errors when operator instances are garbage collected.
+Callbacks should never capture operator 'self' references.
 """
 
 import threading
@@ -53,6 +57,7 @@ class Task:
         created_at: Timestamp when task was created
         started_at: Timestamp when task started executing
         completed_at: Timestamp when task finished
+        progress_data: Additional progress data (dict)
     """
     id: str
     func: Callable
@@ -71,6 +76,7 @@ class Task:
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
+    progress_data: Optional[Dict[str, Any]] = None
     
     def __lt__(self, other: 'Task') -> bool:
         """Compare tasks for priority queue ordering."""
@@ -83,6 +89,32 @@ class Task:
         return self.cancellation_token is not None and self.cancellation_token.is_set()
 
 
+def _is_blender_context_valid() -> bool:
+    """
+    Check if Blender context is valid for callback execution.
+    
+    This is crucial for preventing StructRNA errors when callbacks
+    are invoked after operator instances have been destroyed.
+    
+    Returns:
+        True if context is valid and safe to use
+    """
+    try:
+        import bpy
+        
+        # Check if we have a valid context
+        if bpy.context is None:
+            return False
+        
+        # Check if scene exists
+        if not hasattr(bpy.context, 'scene') or bpy.context.scene is None:
+            return False
+        
+        return True
+    except (ReferenceError, AttributeError, RuntimeError, ImportError):
+        return False
+
+
 class TaskManager:
     """
     Thread-safe background task manager with worker thread pool.
@@ -90,23 +122,24 @@ class TaskManager:
     Implements singleton pattern to ensure only one task manager exists.
     Provides task submission, cancellation, and status tracking.
     
+    IMPORTANT: Callbacks passed to submit_task() should NOT capture
+    operator 'self' references. Use CallbackContext from callback_handler.py
+    instead to pass data to callbacks safely.
+    
     Usage:
-        task_manager = TaskManager()
+        from .callback_handler import (
+            SearchCallbackHandler, 
+            create_search_context
+        )
         
-        def my_task(cancellation_token=None, progress_callback=None):
-            for i in range(100):
-                if cancellation_token and cancellation_token.is_set():
-                    raise InterruptedError("Task cancelled")
-                if progress_callback:
-                    progress_callback(i / 100, f"Processing {i}%")
-                # Do work...
-            return "Done"
+        ctx = create_search_context(query, page, per_page)
         
         task_id = task_manager.submit_task(
             task_func=my_task,
             priority=TaskPriority.NORMAL,
-            on_complete=lambda t: print(f"Completed: {t.result}"),
-            on_error=lambda t, e: print(f"Error: {e}")
+            on_complete=lambda t: SearchCallbackHandler.on_complete(ctx, t),
+            on_error=lambda t, e: SearchCallbackHandler.on_error(ctx, t, e),
+            on_progress=lambda t: SearchCallbackHandler.on_progress(ctx, t)
         )
     """
     
@@ -205,9 +238,9 @@ class TaskManager:
                 task.status = TaskStatus.CANCELLED
                 return
             
-            # Create progress callback wrapper
-            def progress_callback(progress: float, message: str = "") -> None:
-                self._update_progress(task, progress, message)
+            # Create progress callback wrapper that stores extra data
+            def progress_callback(progress: float, message: str = "", extra_data: Dict = None) -> None:
+                self._update_progress(task, progress, message, extra_data)
             
             # Execute the task function
             # Pass cancellation_token and progress_callback as keyword arguments
@@ -247,7 +280,13 @@ class TaskManager:
             if task.on_error:
                 self._schedule_main_thread_callback(task.on_error, task, e)
     
-    def _update_progress(self, task: Task, progress: float, message: str) -> None:
+    def _update_progress(
+        self, 
+        task: Task, 
+        progress: float, 
+        message: str,
+        extra_data: Optional[Dict] = None
+    ) -> None:
         """
         Update task progress and notify callbacks.
         
@@ -255,9 +294,11 @@ class TaskManager:
             task: The task to update
             progress: Progress value (0.0 to 1.0)
             message: Status message
+            extra_data: Additional progress data (e.g., ETA, speed)
         """
         task.progress = max(0.0, min(1.0, progress))
         task.message = message
+        task.progress_data = extra_data
         
         # Schedule progress callback on main thread
         if task.on_progress:
@@ -267,6 +308,11 @@ class TaskManager:
         """
         Schedule a callback to run on Blender's main thread.
         
+        This method implements safe callback execution that:
+        1. Validates Blender context before execution
+        2. Catches ReferenceError for destroyed RNA structures
+        3. Logs errors without crashing
+        
         Args:
             callback: The callback function
             *args: Arguments to pass to the callback
@@ -274,21 +320,51 @@ class TaskManager:
         try:
             import bpy
             
-            def run_callback() -> None:
+            def safe_callback() -> None:
+                """
+                Wrapper that safely executes the callback.
+                
+                This prevents StructRNA errors by:
+                1. Checking if Blender context is still valid
+                2. Catching ReferenceError exceptions
+                3. Handling any other exceptions gracefully
+                """
                 try:
+                    # Validate context before executing callback
+                    if not _is_blender_context_valid():
+                        print("[TaskManager] Callback skipped - Blender context invalid")
+                        return None
+                    
+                    # Execute the callback
                     callback(*args)
+                    
+                except ReferenceError as e:
+                    # This is the StructRNA error we're trying to prevent
+                    # It means the operator instance was garbage collected
+                    print(f"[TaskManager] Callback skipped - RNA structure removed: {e}")
+                    
+                except AttributeError as e:
+                    # May occur if accessing destroyed objects
+                    if "StructRNA" in str(e) or "removed" in str(e).lower():
+                        print(f"[TaskManager] Callback skipped - object removed: {e}")
+                    else:
+                        print(f"[TaskManager] Callback AttributeError: {e}")
+                        
                 except Exception as e:
+                    # Log other errors but don't crash
                     print(f"[TaskManager] Callback error: {e}")
+                    
                 return None  # Don't repeat the timer
             
-            bpy.app.timers.register(run_callback, first_interval=0.0)
+            # Register the safe callback with Blender's timer system
+            bpy.app.timers.register(safe_callback, first_interval=0.0)
             
         except ImportError:
-            # Not running in Blender, execute directly
+            # Not running in Blender, execute directly (for testing)
             try:
                 callback(*args)
             except Exception as e:
-                print(f"[TaskManager] Callback error: {e}")
+                print(f"[TaskManager] Callback error (non-Blender): {e}")
     
     def submit_task(
         self,
@@ -305,7 +381,27 @@ class TaskManager:
         
         The task function should accept these keyword arguments:
         - cancellation_token: threading.Event to check for cancellation
-        - progress_callback: Callable[[float, str], None] to report progress
+        - progress_callback: Callable[[float, str, dict], None] to report progress
+        
+        IMPORTANT: Callbacks should NOT capture operator 'self' references.
+        Use CallbackContext from callback_handler.py instead.
+        
+        Example:
+            from .callback_handler import (
+                SearchCallbackHandler,
+                create_search_context
+            )
+            
+            ctx = create_search_context(query, page, per_page)
+            
+            task_id = task_manager.submit_task(
+                task_func=background_search,
+                priority=TaskPriority.HIGH,
+                on_complete=lambda t: SearchCallbackHandler.on_complete(ctx, t),
+                on_error=lambda t, e: SearchCallbackHandler.on_error(ctx, t, e),
+                on_progress=lambda t: SearchCallbackHandler.on_progress(ctx, t),
+                kwargs={'query': query, 'page': page}
+            )
         
         Args:
             task_func: The function to execute

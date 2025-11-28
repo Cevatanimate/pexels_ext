@@ -294,6 +294,29 @@ class PEXELS_State(bpy.types.PropertyGroup):
         default=""
     )
     
+    # Operation status tracking for async operations
+    # This is used by the callback handlers to track operation state
+    operation_status: bpy.props.EnumProperty(
+        name="Operation Status",
+        description="Current operation status",
+        items=[
+            ('IDLE', 'Idle', 'No operation in progress'),
+            ('SEARCHING', 'Searching', 'Search operation in progress'),
+            ('DOWNLOADING', 'Downloading', 'Download operation in progress'),
+            ('CACHING', 'Caching', 'Caching operation in progress'),
+            ('IMPORTING', 'Importing', 'Import operation in progress'),
+            ('ERROR', 'Error', 'An error occurred'),
+        ],
+        default='IDLE'
+    )
+    
+    # Last error message for display in UI
+    last_error_message: bpy.props.StringProperty(
+        name="Last Error",
+        description="Last error message from async operations",
+        default=""
+    )
+    
     # Search results collection
     items: bpy.props.CollectionProperty(
         type=PEXELS_Item,

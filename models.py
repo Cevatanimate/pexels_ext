@@ -81,7 +81,6 @@ class EnhancedCacheEntry:
     cache_type: CacheType
     metadata: Dict[str, Any] = field(default_factory=dict)
     
-    @property
     def is_expired(self) -> bool:
         """Check if this cache entry has expired."""
         if self.expires_at is None:
@@ -261,7 +260,6 @@ class CachedSearchResult:
     access_count: int = 0
     last_accessed: Optional[float] = None
     
-    @property
     def is_expired(self) -> bool:
         """Check if this cached result has expired."""
         return time.time() > self.expires_at
@@ -314,6 +312,45 @@ class CachedSearchResult:
         """Generate a hash for query lookup."""
         content = f"{query.lower().strip()}:{page}:{per_page}"
         return hashlib.sha256(content.encode('utf-8')).hexdigest()[:32]
+    
+    @classmethod
+    def create(
+        cls,
+        query: str,
+        page: int,
+        per_page: int,
+        total_results: int,
+        photos: List[PhotoData],
+        ttl_seconds: float = 86400  # 24 hours default
+    ) -> 'CachedSearchResult':
+        """
+        Create a new cached search result.
+        
+        Args:
+            query: Search query
+            page: Page number
+            per_page: Results per page
+            total_results: Total results available
+            photos: List of PhotoData objects
+            ttl_seconds: Time-to-live in seconds (default 24 hours)
+            
+        Returns:
+            New CachedSearchResult instance
+        """
+        now = time.time()
+        return cls(
+            id=str(uuid.uuid4()),
+            query=query,
+            query_hash=cls.generate_query_hash(query, page, per_page),
+            page=page,
+            per_page=per_page,
+            total_results=total_results,
+            photos=photos,
+            cached_at=now,
+            expires_at=now + ttl_seconds,
+            access_count=0,
+            last_accessed=now
+        )
 
 
 # ============================================================================

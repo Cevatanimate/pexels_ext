@@ -5,6 +5,10 @@ Blender operators for Pexels image search and import functionality.
 Provides operators for searching, importing, and managing Pexels images
 with background task support, progress tracking, and proper error handling.
 Includes favorites management and search history integration.
+
+IMPORTANT: This module has been refactored to prevent StructRNA errors.
+All async callbacks now use static handlers from callback_handler.py
+instead of capturing operator 'self' references.
 """
 
 import bpy
@@ -37,6 +41,17 @@ from .utils import (
     format_eta,
     format_speed,
     truncate_filename
+)
+
+# Import the new callback handler system
+from .callback_handler import (
+    SearchCallbackHandler,
+    ImportCallbackHandler,
+    CacheCallbackHandler,
+    create_search_context,
+    create_import_context,
+    create_cache_context,
+    CallbackContext
 )
 
 # Import new managers for favorites and history
@@ -101,14 +116,19 @@ def get_state(context):
 
 
 class PEXELS_OT_Search(bpy.types.Operator):
-    """Search for images on Pexels"""
+    """
+    Search for images on Pexels.
+    
+    This operator has been refactored to prevent StructRNA errors by:
+    1. Using static callback handlers instead of instance methods
+    2. Passing context data as CallbackContext instead of capturing 'self'
+    3. All async callbacks are now safe from operator lifecycle issues
+    """
     
     bl_idname = "pexels.search"
     bl_label = "Search Pexels"
     bl_description = "Search for images on Pexels using the entered keywords"
     bl_options = {'REGISTER', 'INTERNAL'}
-    
-    _task_id: str = ""
     
     def execute(self, context):
         """Execute the search operation"""
@@ -160,18 +180,31 @@ class PEXELS_OT_Search(bpy.types.Operator):
         # Clear previous results
         state.clear_results()
         state.is_loading = True
+        state.operation_status = 'SEARCHING'
+        state.last_error_message = ""
         preview_manager.ensure_previews()
         
         # Start progress tracking
         progress_tracker.start(total_items=100, initial_item="Searching Pexels...")
         
-        # Submit background task
-        self._task_id = task_manager.submit_task(
+        # Create callback context - this replaces capturing 'self'
+        # The context contains all data needed for callbacks without
+        # referencing the operator instance
+        callback_ctx = create_search_context(
+            query=state.query,
+            page=state.page,
+            per_page=prefs.max_results
+        )
+        
+        # Submit background task with STATIC callback handlers
+        # Note: We use lambda to pass the context, but the lambda
+        # does NOT capture 'self' - only the CallbackContext
+        task_manager.submit_task(
             task_func=self._background_search,
             priority=TaskPriority.HIGH,
-            on_complete=lambda task: self._on_search_complete(context, task),
-            on_error=lambda task, error: self._on_search_error(context, task, error),
-            on_progress=lambda task: self._on_search_progress(context, task),
+            on_complete=lambda task: SearchCallbackHandler.on_complete(callback_ctx, task),
+            on_error=lambda task, error: SearchCallbackHandler.on_error(callback_ctx, task, error),
+            on_progress=lambda task: SearchCallbackHandler.on_progress(callback_ctx, task),
             kwargs={
                 'api_key': prefs.api_key,
                 'query': state.query,
@@ -196,6 +229,8 @@ class PEXELS_OT_Search(bpy.types.Operator):
     ):
         """
         Background task for search operation.
+        
+        This is a static method - it doesn't reference 'self' at all.
         
         Args:
             api_key: Pexels API key
@@ -323,152 +358,6 @@ class PEXELS_OT_Search(bpy.types.Operator):
         # Force UI update
         self._redraw_ui(context)
     
-    def _on_search_complete(self, context, task):
-        """Handle search completion on main thread."""
-        try:
-            state = get_state(context)
-            if state is None:
-                logger.error("State not available in search completion handler")
-                return
-            
-            results, headers, thumbnail_paths = task.result
-            
-            # Process results
-            self._process_search_results(state, results, thumbnail_paths)
-            
-            # Update rate limits
-            self._update_rate_limits(state, headers)
-            
-            # Cache search results for future use
-            if ENHANCED_CACHING_AVAILABLE:
-                try:
-                    photos = results.get("photos", []) or []
-                    total_results = results.get("total_results", 0)
-                    prefs = get_preferences(context)
-                    
-                    cached_result = cache_manager.cache_search_result(
-                        query=state.query,
-                        page=state.page,
-                        per_page=prefs.max_results if prefs else 50,
-                        photos=photos,
-                        total_results=total_results
-                    )
-                    
-                    # Record in search history
-                    if cached_result and history_manager:
-                        history_manager.record_search(
-                            query=state.query,
-                            result_count=total_results,
-                            page=state.page,
-                            per_page=prefs.max_results if prefs else 50,
-                            cached_result_id=cached_result.id
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to cache search results: {e}")
-            
-            # Set default selection
-            if state.items:
-                self._set_default_selection(state, context)
-            
-            state.is_loading = False
-            progress_tracker.complete()
-            
-            # Report success
-            photos_count = len(state.items)
-            total_count = state.total_results
-            logger.info("Search completed", photos_count=photos_count, total_count=total_count)
-            
-            # Force UI update
-            self._redraw_ui(context)
-            
-        except Exception as e:
-            logger.error("Error in search completion handler", exception=e)
-            state = get_state(context)
-            if state:
-                state.is_loading = False
-            progress_tracker.error(str(e))
-    
-    def _on_search_error(self, context, task, error):
-        """Handle search error on main thread."""
-        state = get_state(context)
-        if state:
-            state.is_loading = False
-        
-        progress_tracker.error(str(error))
-        
-        # Log error
-        logger.error("Search failed", exception=error)
-        
-        # Show error message
-        error_msg = str(error)
-        if isinstance(error, OnlineAccessDisabledError):
-            error_msg = get_online_access_disabled_message()
-        elif isinstance(error, PexelsAuthError):
-            error_msg = "Invalid API key. Check your Pexels API key in preferences."
-        elif isinstance(error, PexelsRateLimitError):
-            error_msg = "Rate limit exceeded. Please try again later."
-        elif isinstance(error, PexelsNetworkError):
-            error_msg = f"Network error: {error}"
-        elif isinstance(error, (PexelsCancellationError, InterruptedError)):
-            error_msg = "Search cancelled"
-        
-        # Schedule error report
-        def report_error():
-            self.report({'ERROR'}, error_msg)
-            return None
-        bpy.app.timers.register(report_error, first_interval=0.0)
-        
-        # Force UI update
-        self._redraw_ui(context)
-    
-    def _on_search_progress(self, context, task):
-        """Handle progress update on main thread."""
-        # Update progress tracker
-        progress_tracker.update(
-            int(task.progress * 100),
-            task.message
-        )
-        
-        # Force UI update
-        self._redraw_ui(context)
-    
-    def _process_search_results(self, state, results, thumbnail_paths):
-        """Process and store search results."""
-        state.total_results = int(results.get("total_results", 0))
-        photos = results.get("photos", []) or []
-        
-        for photo_data in photos:
-            item = state.items.add()
-            self._populate_item_data(item, photo_data)
-            
-            # Load preview if thumbnail was downloaded
-            photo_id = str(photo_data.get("id", ""))
-            if photo_id in thumbnail_paths:
-                try:
-                    preview_manager.load_preview(photo_id, thumbnail_paths[photo_id])
-                except Exception as e:
-                    logger.warning(f"Failed to load preview for {photo_id}", exception=e)
-    
-    def _populate_item_data(self, item, photo_data):
-        """Populate PEXELS_Item with data from API response."""
-        item.item_id = int(photo_data.get("id", 0))
-        item.photographer = photo_data.get("photographer", "")
-        item.width = int(photo_data.get("width", 0) or 0)
-        item.height = int(photo_data.get("height", 0) or 0)
-        
-        # Extract image URLs
-        src = photo_data.get("src", {}) or {}
-        item.thumb_url = (
-            src.get("medium") or 
-            src.get("small") or 
-            src.get("tiny") or ""
-        )
-        item.full_url = (
-            src.get("large2x") or 
-            src.get("original") or 
-            src.get("large") or ""
-        )
-    
     def _set_default_selection(self, state, context):
         """Set default selection after search."""
         try:
@@ -477,36 +366,15 @@ class PEXELS_OT_Search(bpy.types.Operator):
             enum_items = pexels_enum_items(state, context)
             valid_identifiers = {item[0] for item in enum_items}
             
-            logger.debug(f"[DEBUG] _set_default_selection: first_item_id='{first_item_id}', enum_items count={len(enum_items)}")
-            
             if first_item_id in valid_identifiers:
                 state.selected_icon_storage = first_item_id
-                logger.debug(f"[DEBUG] _set_default_selection: Set to first_item_id '{first_item_id}'")
             elif enum_items:
                 state.selected_icon_storage = enum_items[0][0]
-                logger.debug(f"[DEBUG] _set_default_selection: Set to first enum item '{enum_items[0][0]}'")
             else:
                 state.selected_icon_storage = ""
-                logger.debug("[DEBUG] _set_default_selection: No valid items, cleared storage")
         except Exception as e:
             logger.warning("Failed to set default selection", exception=e)
             state.selected_icon_storage = ""
-    
-    def _update_rate_limits(self, state, headers):
-        """Update rate limit information from response headers."""
-        try:
-            limit_str = headers.get('X-Ratelimit-Limit')
-            remaining_str = headers.get('X-Ratelimit-Remaining')
-            reset_str = headers.get('X-Ratelimit-Reset')
-
-            if limit_str:
-                state.rate_limit = int(limit_str)
-            if remaining_str:
-                state.rate_remaining = int(remaining_str)
-            if reset_str:
-                state.rate_reset_timestamp = int(reset_str)
-        except (ValueError, TypeError) as e:
-            logger.warning("Failed to parse rate limit headers", exception=e)
     
     def _redraw_ui(self, context):
         """Force UI redraw."""
@@ -535,6 +403,7 @@ class PEXELS_OT_Cancel(bpy.types.Operator):
         state = get_state(context)
         if state:
             state.is_loading = False
+            state.operation_status = 'IDLE'
         
         # Update progress tracker
         progress_tracker.cancel()
@@ -575,11 +444,17 @@ class PEXELS_OT_Page(bpy.types.Operator):
             state.page += 1
         
         # Trigger new search with updated page
+        # This creates a NEW operator instance, which is fine because
+        # we're using static callbacks that don't reference 'self'
         return bpy.ops.pexels.search('INVOKE_DEFAULT')
 
 
 class PEXELS_OT_Import(bpy.types.Operator):
-    """Import selected Pexels image into Blender"""
+    """
+    Import selected Pexels image into Blender.
+    
+    Refactored to use static callback handlers to prevent StructRNA errors.
+    """
     
     bl_idname = "pexels.import_image"
     bl_label = "Import Selected Image"
@@ -599,8 +474,6 @@ class PEXELS_OT_Import(bpy.types.Operator):
         min=0.01,
         max=100.0
     )
-    
-    _task_id: str = ""
     
     def execute(self, context):
         """Execute image import."""
@@ -634,23 +507,25 @@ class PEXELS_OT_Import(bpy.types.Operator):
         # Start progress tracking
         progress_tracker.start(total_items=100, initial_item="Downloading image...")
         state.is_loading = True
+        state.operation_status = 'DOWNLOADING'
+        state.last_error_message = ""
         
-        # Store import settings
-        import_settings = {
-            'url': selected_item.full_url,
-            'item_id': selected_item.item_id,
-            'photographer': selected_item.photographer,
-            'as_plane': self.as_plane,
-            'plane_size': self.plane_size
-        }
+        # Create callback context - NO 'self' reference!
+        callback_ctx = create_import_context(
+            item_id=selected_item.item_id,
+            photographer=selected_item.photographer,
+            url=selected_item.full_url,
+            as_plane=self.as_plane,
+            plane_size=self.plane_size
+        )
         
-        # Submit background task
-        self._task_id = task_manager.submit_task(
+        # Submit background task with STATIC callback handlers
+        task_manager.submit_task(
             task_func=self._background_download,
             priority=TaskPriority.HIGH,
-            on_complete=lambda task: self._on_download_complete(context, task, import_settings),
-            on_error=lambda task, error: self._on_download_error(context, task, error),
-            on_progress=lambda task: self._on_download_progress(context, task),
+            on_complete=lambda task: ImportCallbackHandler.on_complete(callback_ctx, task),
+            on_error=lambda task, error: ImportCallbackHandler.on_error(callback_ctx, task, error),
+            on_progress=lambda task: ImportCallbackHandler.on_progress(callback_ctx, task),
             kwargs={
                 'url': selected_item.full_url,
                 'item_id': selected_item.item_id
@@ -669,6 +544,8 @@ class PEXELS_OT_Import(bpy.types.Operator):
     ):
         """
         Background task for image download.
+        
+        Static method - no 'self' reference.
         
         Args:
             url: Image URL
@@ -722,91 +599,6 @@ class PEXELS_OT_Import(bpy.types.Operator):
         filename = extract_filename_from_url(url)
         temp_path = write_temp_file(filename, image_data)
         return temp_path
-    
-    def _on_download_complete(self, context, task, import_settings):
-        """Handle download completion on main thread."""
-        try:
-            state = get_state(context)
-            if state:
-                state.is_loading = False
-            
-            image_path = task.result
-            
-            # Load image into Blender
-            image = bpy.data.images.load(image_path, check_existing=False)
-            image.name = f"Pexels_{import_settings['item_id']}"
-            
-            # Create plane if requested
-            if import_settings['as_plane']:
-                plane_obj = create_plane_with_image(image, size=import_settings['plane_size'])
-                if plane_obj:
-                    plane_obj.select_set(True)
-                    context.view_layer.objects.active = plane_obj
-            
-            progress_tracker.complete()
-            
-            # Report success
-            photographer = import_settings.get('photographer', 'Unknown')
-            logger.info("Image imported successfully", image_id=import_settings['item_id'])
-            
-            def report_success():
-                self.report({'INFO'}, f"Imported: {photographer}'s image (ID: {import_settings['item_id']})")
-                return None
-            bpy.app.timers.register(report_success, first_interval=0.0)
-            
-            # Force UI update
-            self._redraw_ui(context)
-            
-        except Exception as e:
-            logger.error("Error in download completion handler", exception=e)
-            state = get_state(context)
-            if state:
-                state.is_loading = False
-            progress_tracker.error(str(e))
-            
-            def report_error():
-                self.report({'ERROR'}, f"Import failed: {e}")
-                return None
-            bpy.app.timers.register(report_error, first_interval=0.0)
-    
-    def _on_download_error(self, context, task, error):
-        """Handle download error on main thread."""
-        state = get_state(context)
-        if state:
-            state.is_loading = False
-        
-        progress_tracker.error(str(error))
-        logger.error("Image download failed", exception=error)
-        
-        error_msg = str(error)
-        if isinstance(error, OnlineAccessDisabledError):
-            error_msg = get_online_access_disabled_message()
-        elif isinstance(error, (PexelsCancellationError, InterruptedError)):
-            error_msg = "Download cancelled"
-        
-        def report_error():
-            self.report({'ERROR'}, error_msg)
-            return None
-        bpy.app.timers.register(report_error, first_interval=0.0)
-        
-        self._redraw_ui(context)
-    
-    def _on_download_progress(self, context, task):
-        """Handle progress update on main thread."""
-        progress_tracker.update(
-            int(task.progress * 100),
-            task.message
-        )
-        self._redraw_ui(context)
-    
-    def _redraw_ui(self, context):
-        """Force UI redraw."""
-        try:
-            if context and hasattr(context, 'screen') and context.screen:
-                for area in context.screen.areas:
-                    area.tag_redraw()
-        except Exception:
-            pass
     
     def invoke(self, context, event):
         """Invoke operator with current preferences."""
@@ -1218,18 +1010,18 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
 
 
 class PEXELS_OT_CacheImages(bpy.types.Operator):
-    """Cache all search result images for offline use"""
+    """
+    Cache all search result images for offline use.
+    
+    Refactored to use static callback handlers.
+    """
     
     bl_idname = "pexels.cache_images"
     bl_label = "Cache Images"
     bl_description = "Download and cache all images from current search results"
     bl_options = {'REGISTER', 'INTERNAL'}
     
-    _task_id: str = ""
     _timer = None
-    _start_time: float = 0.0
-    _bytes_downloaded: float = 0.0
-    _last_speed_update: float = 0.0
     
     def execute(self, context):
         """Execute the caching operation."""
@@ -1294,18 +1086,18 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
         state.caching_items_total = len(urls_to_cache)
         state.caching_speed_bytes = 0.0
         state.caching_error_message = ""
+        state.operation_status = 'CACHING'
         
-        self._start_time = time.time()
-        self._bytes_downloaded = 0.0
-        self._last_speed_update = self._start_time
+        # Create callback context - NO 'self' reference!
+        callback_ctx = create_cache_context(len(urls_to_cache))
         
-        # Submit background task
-        self._task_id = task_manager.submit_task(
+        # Submit background task with STATIC callback handlers
+        task_manager.submit_task(
             task_func=self._background_cache,
             priority=TaskPriority.NORMAL,
-            on_complete=lambda task: self._on_cache_complete(context, task),
-            on_error=lambda task, error: self._on_cache_error(context, task, error),
-            on_progress=lambda task: self._on_cache_progress(context, task),
+            on_complete=lambda task: CacheCallbackHandler.on_complete(callback_ctx, task),
+            on_error=lambda task, error: CacheCallbackHandler.on_error(callback_ctx, task, error),
+            on_progress=lambda task: CacheCallbackHandler.on_progress(callback_ctx, task),
             kwargs={
                 'urls_to_cache': urls_to_cache
             }
@@ -1347,6 +1139,8 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
         """
         Background task for batch image caching.
         
+        Static method - no 'self' reference.
+        
         Args:
             urls_to_cache: List of dicts with url, item_id, filename
             cancellation_token: Event to signal cancellation
@@ -1385,6 +1179,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
                 else:
                     eta = 0
                 
+                # Pass extra data for detailed progress
                 progress_callback(
                     progress,
                     filename,
@@ -1399,8 +1194,6 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
             
             try:
                 # Download image
-                from .api import download_image, USER_AGENT
-                
                 image_data = download_image(
                     url,
                     headers={"User-Agent": USER_AGENT},
@@ -1441,80 +1234,6 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
             'total_bytes': total_bytes
         }
     
-    def _on_cache_complete(self, context, task):
-        """Handle caching completion on main thread."""
-        state = get_state(context)
-        if state:
-            state.caching_in_progress = False
-            state.caching_progress = 100.0
-            state.caching_current_file = ""
-            state.caching_eta_seconds = 0
-        
-        self.cancel(context)
-        
-        result = task.result
-        cached = result.get('cached_count', 0)
-        failed = result.get('failed_count', 0)
-        
-        logger.info("Batch caching completed", cached=cached, failed=failed)
-        
-        # Report result
-        def report_result():
-            if failed > 0:
-                self.report({'WARNING'}, f"Cached {cached} images, {failed} failed")
-            else:
-                self.report({'INFO'}, f"Successfully cached {cached} images")
-            return None
-        bpy.app.timers.register(report_result, first_interval=0.0)
-        
-        self._redraw_ui(context)
-    
-    def _on_cache_error(self, context, task, error):
-        """Handle caching error on main thread."""
-        state = get_state(context)
-        if state:
-            state.caching_in_progress = False
-            state.caching_error_message = str(error)
-        
-        self.cancel(context)
-        
-        logger.error("Batch caching failed", exception=error)
-        
-        error_msg = str(error)
-        if isinstance(error, OnlineAccessDisabledError):
-            error_msg = get_online_access_disabled_message()
-        elif isinstance(error, (PexelsCancellationError, InterruptedError)):
-            error_msg = "Caching cancelled"
-        
-        def report_error():
-            self.report({'ERROR'}, error_msg)
-            return None
-        bpy.app.timers.register(report_error, first_interval=0.0)
-        
-        self._redraw_ui(context)
-    
-    def _on_cache_progress(self, context, task):
-        """Handle progress update on main thread."""
-        state = get_state(context)
-        if state is None:
-            return
-        
-        # Update state properties from task progress data
-        state.caching_progress = task.progress * 100.0
-        
-        # Extract additional progress data if available
-        if hasattr(task, 'progress_data') and task.progress_data:
-            data = task.progress_data
-            state.caching_current_file = data.get('current_item', '')
-            state.caching_items_done = data.get('completed', 0)
-            state.caching_items_total = data.get('total', 0)
-            state.caching_eta_seconds = data.get('eta_seconds', 0)
-            state.caching_speed_bytes = data.get('speed_bytes', 0.0)
-        elif task.message:
-            state.caching_current_file = task.message
-        
-        self._redraw_ui(context)
-    
     def _redraw_ui(self, context):
         """Force UI redraw."""
         try:
@@ -1545,6 +1264,7 @@ class PEXELS_OT_CancelCaching(bpy.types.Operator):
         if state:
             state.caching_in_progress = False
             state.caching_error_message = "Cancelled by user"
+            state.operation_status = 'IDLE'
         
         logger.info("Caching cancelled", cancelled_count=cancelled_count)
         self.report({'INFO'}, "Caching cancelled")
