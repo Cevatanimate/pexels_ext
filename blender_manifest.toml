@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "pexels_image_search"
 name = "Pexels Image Search"
 tagline = "Search, preview, and import high-quality images from Pexels"
-version = "1.0.1"
+version = "1.0.3"
 type = "add-on"
 
 website = "https://github.com/Cevatanimate/pexels_ext"
