@@ -231,6 +231,11 @@ class PEXELS_OT_Search(bpy.types.Operator):
                         cached_path = cache_manager.get_file_path(thumb_url, variant="thumb")
                         if cached_path:
                             thumbnail_paths[str(photo_id)] = cached_path
+                            # Load preview from cached file
+                            try:
+                                preview_manager.load_preview(str(photo_id), cached_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to load cached preview for {photo_id}", exception=e)
                         else:
                             # Download and cache
                             thumb_data = download_image(
@@ -389,13 +394,20 @@ class PEXELS_OT_Search(bpy.types.Operator):
             enum_items = pexels_enum_items(state, context)
             valid_identifiers = {item[0] for item in enum_items}
             
+            logger.debug(f"[DEBUG] _set_default_selection: first_item_id='{first_item_id}', enum_items count={len(enum_items)}")
+            
             if first_item_id in valid_identifiers:
-                state._selected_icon = first_item_id
+                state.selected_icon_storage = first_item_id
+                logger.debug(f"[DEBUG] _set_default_selection: Set to first_item_id '{first_item_id}'")
             elif enum_items:
-                state._selected_icon = enum_items[0][0]
+                state.selected_icon_storage = enum_items[0][0]
+                logger.debug(f"[DEBUG] _set_default_selection: Set to first enum item '{enum_items[0][0]}'")
+            else:
+                state.selected_icon_storage = ""
+                logger.debug("[DEBUG] _set_default_selection: No valid items, cleared storage")
         except Exception as e:
             logger.warning("Failed to set default selection", exception=e)
-            state._selected_icon = None
+            state.selected_icon_storage = ""
     
     def _update_rate_limits(self, state, headers):
         """Update rate limit information from response headers."""

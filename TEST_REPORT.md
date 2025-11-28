@@ -299,7 +299,74 @@ all_classes = property_classes + operator_classes + ui_classes
 
 ---
 
-## 10. Recommendations for Future Improvements
+## 10. Cached Image Selection Fix
+
+### Issue Summary
+**Date:** 2025-11-28
+**Status:** ✅ FIXED
+
+Image selection from cached items was broken - when thumbnails were loaded from cache instead of being freshly downloaded, users could not select them in the UI dropdown.
+
+### Root Causes Identified
+
+| # | Location | Issue |
+|---|----------|-------|
+| 1 | [`operators.py:229-252`](operators.py:229) | When thumbnails were found in cache, the code retrieved the cached file path but did NOT load the preview into the preview collection |
+| 2 | [`properties.py:137-146`](properties.py:137) | The enum callback filtered out items without valid preview icons (icon_id > 0), causing cached items without loaded previews to be excluded |
+
+### Fixes Implemented
+
+#### Fix 1: Load Previews for Cached Thumbnails
+**File:** [`operators.py:234-238`](operators.py:234)
+
+```python
+if cached_path:
+    thumbnail_paths[str(photo_id)] = cached_path
+    # Load preview from cached file
+    try:
+        preview_manager.load_preview(str(photo_id), cached_path)
+    except Exception as e:
+        logger.warning(f"Failed to load cached preview for {photo_id}", exception=e)
+```
+
+This ensures that when a thumbnail is found in cache, its preview is immediately loaded into the preview collection, making it available for display in the UI.
+
+#### Fix 2: Graceful Enum Handling for Missing Previews
+**File:** [`properties.py:137-156`](properties.py:137)
+
+```python
+if icon_id and icon_id > 0:
+    # Item has valid preview icon
+    items.append((image_id, f"{item.item_id}", item.photographer or "Unknown photographer", icon_id, i))
+else:
+    # Include item with default icon for pending preview
+    items.append((image_id, f"{item.item_id}", item.photographer or "Unknown photographer", 'IMAGE_DATA', i))
+```
+
+This change ensures items are always included in the enum dropdown, using a default `IMAGE_DATA` icon when the preview hasn't loaded yet, rather than excluding them entirely.
+
+### Test Results
+
+**Test Script:** [`test_cached_selection.py`](test_cached_selection.py)
+**Result:** ✅ ALL 12 TESTS PASSED
+
+| Test Category | Tests | Status |
+|---------------|-------|--------|
+| Preview loading from cache | 3 | ✅ Passed |
+| Enum item generation with missing previews | 3 | ✅ Passed |
+| Cache integration | 3 | ✅ Passed |
+| Edge cases | 3 | ✅ Passed |
+
+### Expected Behavior After Fix
+
+1. **Cached thumbnails now display correctly** - When search results include previously cached thumbnails, they are properly loaded and displayed
+2. **Selection works for all items** - Users can select any image from the dropdown, regardless of whether it was loaded from cache or freshly downloaded
+3. **Graceful degradation** - Items with pending previews show a default icon instead of being hidden
+4. **No UI freezing** - Preview loading happens efficiently without blocking the interface
+
+---
+
+## 11. Recommendations for Future Improvements
 
 ### Minor Enhancements:
 1. **Unit Tests** - Add pytest-based unit tests for individual functions
