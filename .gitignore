@@ -1,3 +1,4 @@
 *.pyc
 CREDITS_SYSTEM_TECHNICAL_SPECIFICATION.md
 /Tests
+.kilocode/rules/Blender -4.3.2_Development _Rules.md
