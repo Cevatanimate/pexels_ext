@@ -27,7 +27,7 @@ from .models import (
     CacheType,
     generate_uuid
 )
-from .logger import logger
+from . import logger
 
 
 class DatabaseManager:
@@ -1474,7 +1474,7 @@ class DatabaseManager:
 
 
 # Global instance
-database_manager = DatabaseManager()
+database_manager = None
 
 
 def get_database_manager() -> DatabaseManager:
@@ -1484,4 +1484,7 @@ def get_database_manager() -> DatabaseManager:
     Returns:
         DatabaseManager instance
     """
+    global database_manager
+    if database_manager is None:
+        database_manager = DatabaseManager()
     return database_manager

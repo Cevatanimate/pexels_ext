@@ -28,22 +28,22 @@ import bpy
 from .properties import property_classes, PEXELS_State
 from .operators import operator_classes
 from .ui import ui_classes
-from .utils import preview_manager, cleanup_all_temp_files, cleanup_old_temp_files
+from .utils import get_preview_manager, cleanup_all_temp_files, cleanup_old_temp_files
 
 # Import managers for initialization
-from .task_manager import task_manager
-from .cache_manager import cache_manager
-from .network_manager import network_manager
+from .task_manager import get_task_manager
+from .cache_manager import get_cache_manager
+from .network_manager import get_network_manager
 from .progress_tracker import progress_tracker
-from .logger import logger, LogLevel
+from .logger import get_logger, LogLevel
 
 # Import callback handler module (critical for StructRNA fix)
 from . import callback_handler
 
 # Import new cache system components
-from .database_manager import database_manager
-from .favorites_manager import favorites_manager
-from .history_manager import history_manager
+from .database_manager import get_database_manager
+from .favorites_manager import get_favorites_manager
+from .history_manager import get_history_manager
 from . import ui_cache_browser
 
 # Collect all classes for registration
@@ -52,37 +52,44 @@ all_classes = property_classes + operator_classes + ui_classes
 
 def _initialize_managers():
     """Initialize all manager instances."""
+    logger = get_logger()
     try:
         # Initialize preview manager
-        preview_manager.ensure_previews()
+        get_preview_manager().ensure_previews()
         logger.debug("Preview manager initialized")
         
         # Cache manager initializes itself on first access
         # Just verify it's accessible
+        cache_manager = get_cache_manager()
         cache_dir = cache_manager.get_cache_directory()
         logger.debug(f"Cache manager initialized, directory: {cache_dir}")
         
         # Database manager initializes itself on first access
+        database_manager = get_database_manager()
         db_path = database_manager.get_database_path()
         logger.debug(f"Database manager initialized, path: {db_path}")
         
         # Favorites manager initializes itself on first access
+        favorites_manager = get_favorites_manager()
         fav_count = favorites_manager.get_count()
         logger.debug(f"Favorites manager initialized, {fav_count} favorites")
         
         # History manager initializes itself on first access
+        history_manager = get_history_manager()
         history_count = history_manager.get_count()
         logger.debug(f"History manager initialized, {history_count} entries")
         
         # Network manager initializes itself on first access
         # Just verify it's accessible
+        network_manager = get_network_manager()
         online_status = network_manager.is_online_access_enabled()
         logger.debug(f"Network manager initialized, online access enabled: {online_status}")
         
         # Task manager initializes itself on first access
         # Just verify it's running
-        is_running = task_manager.is_running()
-        logger.debug(f"Task manager initialized, running: {is_running}")
+        # Note: is_running() removed in new TaskManager, just getting it starts it
+        get_task_manager()
+        logger.debug(f"Task manager initialized")
         
         # Progress tracker is ready to use
         logger.debug("Progress tracker initialized")
@@ -109,9 +116,11 @@ def _initialize_managers():
 
 def _shutdown_managers():
     """Shutdown all manager instances and cleanup resources."""
+    logger = get_logger()
     try:
         # Cancel all pending tasks
         try:
+            task_manager = get_task_manager()
             cancelled = task_manager.cancel_all()
             if cancelled > 0:
                 logger.info(f"Cancelled {cancelled} pending tasks")
@@ -120,7 +129,7 @@ def _shutdown_managers():
         
         # Shutdown task manager
         try:
-            task_manager.shutdown(wait=True, timeout=2.0)
+            get_task_manager().shutdown()
             logger.debug("Task manager shutdown")
         except Exception as e:
             logger.warning(f"Error shutting down task manager: {e}")
@@ -135,7 +144,7 @@ def _shutdown_managers():
         
         # Clear preview manager
         try:
-            preview_manager.clear_previews()
+            get_preview_manager().clear_previews()
             logger.debug("Preview manager cleared")
         except Exception as e:
             logger.warning(f"Error clearing preview manager: {e}")
@@ -150,7 +159,7 @@ def _shutdown_managers():
         
         # Close database connection
         try:
-            database_manager.close()
+            get_database_manager().close()
             logger.debug("Database manager closed")
         except Exception as e:
             logger.warning(f"Error closing database: {e}")
@@ -171,6 +180,7 @@ def _shutdown_managers():
 
 def register():
     """Register all addon classes and properties."""
+    logger = get_logger()
     try:
         # Initialize managers first
         _initialize_managers()
@@ -196,6 +206,7 @@ def register():
 
 def unregister():
     """Unregister all addon classes and cleanup."""
+    logger = get_logger()
     try:
         # Remove scene property
         if hasattr(bpy.types.Scene, "pexels_state"):

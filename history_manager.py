@@ -21,7 +21,7 @@ from .models import (
     CachedSearchResult,
     generate_uuid
 )
-from .logger import logger
+from . import logger
 
 
 @dataclass
@@ -726,7 +726,7 @@ class HistoryManager:
 
 
 # Global instance
-history_manager = HistoryManager()
+history_manager = None
 
 
 def get_history_manager() -> HistoryManager:
@@ -736,4 +736,7 @@ def get_history_manager() -> HistoryManager:
     Returns:
         HistoryManager instance
     """
+    global history_manager
+    if history_manager is None:
+        history_manager = HistoryManager()
     return history_manager

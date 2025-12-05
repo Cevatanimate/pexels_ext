@@ -19,7 +19,7 @@ from mathutils import Vector
 import bpy
 import bpy.utils.previews
 
-from .logger import logger
+from . import logger
 
 
 # Thread lock for temp file operations
@@ -234,10 +234,10 @@ def load_image_from_url(url: str, use_cache: bool = True) -> bpy.types.Image:
     # Try to use cache manager
     if use_cache:
         try:
-            from .cache_manager import cache_manager
+            from .cache_manager import get_cache_manager
             
             # Check cache first
-            cached_path = cache_manager.get_file_path(url, variant="full")
+            cached_path = get_cache_manager().get_file_path(url, variant="full")
             if cached_path and os.path.exists(cached_path):
                 logger.debug(f"Loading image from cache: {cached_path}")
                 return bpy.data.images.load(cached_path, check_existing=False)
@@ -250,11 +250,11 @@ def load_image_from_url(url: str, use_cache: bool = True) -> bpy.types.Image:
     # Try to cache the image
     if use_cache:
         try:
-            from .cache_manager import cache_manager
-            cache_manager.put(url, image_data, variant="full")
+            from .cache_manager import get_cache_manager
+            get_cache_manager().put(url, image_data, variant="full")
             
             # Load from cache path
-            cached_path = cache_manager.get_file_path(url, variant="full")
+            cached_path = get_cache_manager().get_file_path(url, variant="full")
             if cached_path and os.path.exists(cached_path):
                 return bpy.data.images.load(cached_path, check_existing=False)
         except ImportError:
@@ -570,7 +570,14 @@ class PreviewManager:
 
 
 # Global preview manager instance
-preview_manager = PreviewManager()
+preview_manager = None
+
+def get_preview_manager() -> PreviewManager:
+    """Get the global preview manager instance."""
+    global preview_manager
+    if preview_manager is None:
+        preview_manager = PreviewManager()
+    return preview_manager
 
 
 # ============================================================================

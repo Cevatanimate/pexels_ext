@@ -13,7 +13,7 @@ operation status display for async operations.
 import bpy
 
 from .progress_tracker import progress_tracker, ProgressStatus
-from .logger import logger
+from .logger import get_logger
 from .utils import format_eta, format_speed, truncate_filename, format_progress_items
 
 # Import favorites manager for favorite status checking
@@ -352,7 +352,7 @@ class PEXELS_PT_Panel(bpy.types.Panel):
                 scale_popup=5.0
             )
         except Exception as e:
-            logger.warning(f"Error drawing icon view: {e}")
+            get_logger().warning(f"Error drawing icon view: {e}")
             results_box.label(text="Error displaying images")
     
     def _draw_selected_image_details(self, layout, state):
@@ -504,8 +504,8 @@ class PEXELS_PT_Settings(bpy.types.Panel):
         
         # Show cache stats if available
         try:
-            from .cache_manager import cache_manager
-            stats = cache_manager.get_cache_stats()
+            from .cache_manager import get_cache_manager
+            stats = get_cache_manager().get_cache_stats()
             
             stats_col = cache_box.column(align=True)
             stats_col.label(text=f"Memory: {stats['memory_items']} items")
@@ -521,8 +521,8 @@ class PEXELS_PT_Settings(bpy.types.Panel):
             # Show favorites count
             if ENHANCED_CACHING_AVAILABLE:
                 try:
-                    from .favorites_manager import favorites_manager
-                    fav_count = favorites_manager.get_count()
+                    from .favorites_manager import get_favorites_manager
+                    fav_count = get_favorites_manager().get_count()
                     stats_col.label(text=f"Favorites: {fav_count}")
                 except Exception:
                     pass
@@ -538,7 +538,8 @@ class PEXELS_PT_Settings(bpy.types.Panel):
         network_box.label(text="Network", icon='WORLD')
         
         try:
-            from .network_manager import network_manager
+            from .network_manager import get_network_manager
+            network_manager = get_network_manager()
             
             if network_manager.is_online():
                 network_box.label(text="Status: Online", icon='CHECKMARK')
@@ -684,9 +685,9 @@ class PEXELS_PT_Favorites(bpy.types.Panel):
         layout = self.layout
         
         try:
-            from .favorites_manager import favorites_manager
+            from .favorites_manager import get_favorites_manager
             
-            favorites = favorites_manager.get_all_favorites()
+            favorites = get_favorites_manager().get_all_favorites()
             
             if not favorites:
                 layout.label(text="No favorites yet", icon='INFO')
@@ -731,7 +732,7 @@ class PEXELS_PT_Favorites(bpy.types.Panel):
                 layout.label(text=f"... and {len(favorites) - 10} more")
                 
         except Exception as e:
-            logger.warning(f"Error drawing favorites: {e}")
+            get_logger().warning(f"Error drawing favorites: {e}")
             layout.label(text="Error loading favorites")
 
 

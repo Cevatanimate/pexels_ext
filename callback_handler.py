@@ -15,7 +15,7 @@ import bpy
 from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
 
-from .logger import logger
+from . import logger
 
 
 @dataclass
@@ -271,7 +271,7 @@ class SearchCallbackHandler:
         state.total_results = int(results.get("total_results", 0))
         photos = results.get("photos", []) or []
         
-        from .utils import preview_manager
+        from .utils import get_preview_manager
         
         for photo_data in photos:
             item = state.items.add()
@@ -281,7 +281,7 @@ class SearchCallbackHandler:
             photo_id = str(photo_data.get("id", ""))
             if photo_id in thumbnail_paths:
                 try:
-                    preview_manager.load_preview(photo_id, thumbnail_paths[photo_id])
+                    get_preview_manager().load_preview(photo_id, thumbnail_paths[photo_id])
                 except Exception as e:
                     logger.warning(f"Failed to load preview for {photo_id}", exception=e)
     
@@ -346,13 +346,13 @@ class SearchCallbackHandler:
     def _cache_results(ctx: CallbackContext, state, results: Dict) -> None:
         """Cache search results for future use."""
         try:
-            from .cache_manager import cache_manager
-            from .history_manager import history_manager
+            from .cache_manager import get_cache_manager
+            from .history_manager import get_history_manager
             
             photos = results.get("photos", []) or []
             total_results = results.get("total_results", 0)
             
-            cached_result = cache_manager.cache_search_result(
+            cached_result = get_cache_manager().cache_search_result(
                 query=ctx.query,
                 page=ctx.page,
                 per_page=ctx.per_page,
@@ -361,8 +361,8 @@ class SearchCallbackHandler:
             )
             
             # Record in search history
-            if cached_result and history_manager:
-                history_manager.record_search(
+            if cached_result:
+                get_history_manager().record_search(
                     query=ctx.query,
                     result_count=total_results,
                     page=ctx.page,

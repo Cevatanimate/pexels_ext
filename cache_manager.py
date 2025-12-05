@@ -31,7 +31,7 @@ from .models import (
     CacheType,
     generate_cache_key
 )
-from .logger import logger
+from . import logger
 
 
 @dataclass
@@ -1325,7 +1325,7 @@ class CacheManager:
 
 
 # Global instance
-cache_manager = CacheManager()
+cache_manager = None
 
 
 def get_cache_manager() -> CacheManager:
@@ -1335,4 +1335,7 @@ def get_cache_manager() -> CacheManager:
     Returns:
         CacheManager instance
     """
+    global cache_manager
+    if cache_manager is None:
+        cache_manager = CacheManager()
     return cache_manager

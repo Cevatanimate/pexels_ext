@@ -23,7 +23,7 @@ from .models import (
     FilterType,
     generate_uuid
 )
-from .logger import logger
+from . import logger
 
 
 @dataclass
@@ -1090,7 +1090,7 @@ class FavoritesManager:
 
 
 # Global instance
-favorites_manager = FavoritesManager()
+favorites_manager = None
 
 
 def get_favorites_manager() -> FavoritesManager:
@@ -1100,4 +1100,7 @@ def get_favorites_manager() -> FavoritesManager:
     Returns:
         FavoritesManager instance
     """
+    global favorites_manager
+    if favorites_manager is None:
+        favorites_manager = FavoritesManager()
     return favorites_manager

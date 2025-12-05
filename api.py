@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, Tuple
 import bpy
 
 from .network_manager import (
-    network_manager,
+    get_network_manager,
     NetworkManager,
     OnlineAccessDisabledError,
     NetworkError,
@@ -24,7 +24,8 @@ from .network_manager import (
     TimeoutError as NetworkTimeoutError,
     RetryConfig
 )
-from .logger import logger, LogLevel
+from . import logger
+from .logger import LogLevel
 
 
 # API Constants
@@ -64,16 +65,6 @@ class PexelsCancellationError(PexelsAPIError):
     pass
 
 
-def get_network_manager() -> NetworkManager:
-    """
-    Get the global network manager instance.
-    
-    Returns:
-        NetworkManager instance
-    """
-    return network_manager
-
-
 def check_online_access() -> bool:
     """
     Check if online access is enabled in Blender preferences.
@@ -81,7 +72,7 @@ def check_online_access() -> bool:
     Returns:
         True if online access is enabled, False otherwise
     """
-    return network_manager.is_online_access_enabled()
+    return get_network_manager().is_online_access_enabled()
 
 
 def get_online_access_disabled_message() -> str:
@@ -142,7 +133,7 @@ def search_images(
         raise PexelsAPIError("Search query cannot be empty")
 
     # Check online access preference
-    if not network_manager.is_online_access_enabled():
+    if not get_network_manager().is_online_access_enabled():
         logger.warning("Online access is disabled in Blender preferences")
         raise OnlineAccessDisabledError(get_online_access_disabled_message())
 
@@ -179,7 +170,7 @@ def search_images(
             max_delay=10.0
         )
 
-        data, response_headers = network_manager.download_with_retry(
+        data, response_headers = get_network_manager().download_with_retry(
             url=url,
             headers=headers,
             timeout=timeout,
@@ -276,7 +267,7 @@ def download_image(
         raise PexelsAPIError("Image URL is required")
 
     # Check online access preference
-    if not network_manager.is_online_access_enabled():
+    if not get_network_manager().is_online_access_enabled():
         logger.warning("Online access is disabled - cannot download image")
         raise OnlineAccessDisabledError(get_online_access_disabled_message())
 
@@ -301,7 +292,7 @@ def download_image(
                     f"Downloaded {progress.downloaded_bytes / 1024:.1f} KB"
                 )
 
-        data = network_manager.download(
+        data = get_network_manager().download(
             url=url,
             headers=req_headers,
             timeout=timeout,
@@ -342,7 +333,7 @@ def check_api_connectivity() -> bool:
     Returns:
         True if API is reachable, False otherwise
     """
-    return network_manager.is_online()
+    return get_network_manager().is_online()
 
 
 def get_api_status() -> str:
@@ -352,4 +343,4 @@ def get_api_status() -> str:
     Returns:
         Status message string
     """
-    return network_manager.get_status_message()
+    return get_network_manager().get_status_message()

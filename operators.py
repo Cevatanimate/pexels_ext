@@ -28,16 +28,16 @@ from .api import (
     check_online_access,
     get_online_access_disabled_message
 )
-from .network_manager import OnlineAccessDisabledError, network_manager
-from .task_manager import task_manager, TaskPriority, TaskStatus
+from .network_manager import OnlineAccessDisabledError, get_network_manager
+from .task_manager import get_task_manager, TaskPriority, TaskStatus
 from .progress_tracker import progress_tracker, ProgressStatus
-from .cache_manager import cache_manager
-from .logger import logger
+from .cache_manager import get_cache_manager
+from .logger import get_logger
 from .utils import (
     load_image_from_url,
     create_plane_with_image,
     write_temp_file,
-    preview_manager,
+    get_preview_manager,
     format_eta,
     format_speed,
     truncate_filename
@@ -56,13 +56,11 @@ from .callback_handler import (
 
 # Import new managers for favorites and history
 try:
-    from .favorites_manager import favorites_manager
-    from .history_manager import history_manager
+    from .favorites_manager import get_favorites_manager
+    from .history_manager import get_history_manager
     ENHANCED_CACHING_AVAILABLE = True
 except ImportError:
     ENHANCED_CACHING_AVAILABLE = False
-    favorites_manager = None
-    history_manager = None
 
 
 def get_preferences(context):
@@ -88,7 +86,7 @@ def get_preferences(context):
             return None
         return context.preferences.addons[__package__].preferences
     except Exception as e:
-        logger.warning("Failed to get addon preferences", exception=e)
+        get_logger().warning("Failed to get addon preferences", exception=e)
         return None
 
 
@@ -111,7 +109,7 @@ def get_state(context):
             return None
         return getattr(context.scene, 'pexels_state', None)
     except Exception as e:
-        logger.warning("Failed to get addon state", exception=e)
+        get_logger().warning("Failed to get addon state", exception=e)
         return None
 
 
@@ -160,19 +158,19 @@ class PEXELS_OT_Search(bpy.types.Operator):
             return {'CANCELLED'}
         
         # Check network connectivity
-        if not network_manager.is_online():
+        if not get_network_manager().is_online():
             self.report({'ERROR'}, "No network connectivity. Check your internet connection.")
             return {'CANCELLED'}
         
-        logger.info("Starting search", query=state.query, page=state.page)
+        get_logger().info("Starting search", query=state.query, page=state.page)
         
         # Check for cached search results first
         if ENHANCED_CACHING_AVAILABLE:
-            cached_result = cache_manager.get_cached_search(
+            cached_result = get_cache_manager().get_cached_search(
                 state.query, state.page, prefs.max_results
             )
             if cached_result:
-                logger.info("Using cached search results", query=state.query)
+                get_logger().info("Using cached search results", query=state.query)
                 self._process_cached_results(state, context, cached_result)
                 self.report({'INFO'}, f"Loaded {len(cached_result.photos)} cached results")
                 return {'FINISHED'}
@@ -182,7 +180,7 @@ class PEXELS_OT_Search(bpy.types.Operator):
         state.is_loading = True
         state.operation_status = 'SEARCHING'
         state.last_error_message = ""
-        preview_manager.ensure_previews()
+        get_preview_manager().ensure_previews()
         
         # Start progress tracking
         progress_tracker.start(total_items=100, initial_item="Searching Pexels...")
@@ -199,7 +197,7 @@ class PEXELS_OT_Search(bpy.types.Operator):
         # Submit background task with STATIC callback handlers
         # Note: We use lambda to pass the context, but the lambda
         # does NOT capture 'self' - only the CallbackContext
-        task_manager.submit_task(
+        get_task_manager().submit_task(
             task_func=self._background_search,
             priority=TaskPriority.HIGH,
             on_complete=lambda task: SearchCallbackHandler.on_complete(callback_ctx, task),
@@ -285,14 +283,14 @@ class PEXELS_OT_Search(bpy.types.Operator):
                 if thumb_url and photo_id:
                     try:
                         # Check cache first
-                        cached_path = cache_manager.get_file_path(thumb_url, variant="thumb")
+                        cached_path = get_cache_manager().get_file_path(thumb_url, variant="thumb")
                         if cached_path:
                             thumbnail_paths[str(photo_id)] = cached_path
                             # Load preview from cached file
                             try:
-                                preview_manager.load_preview(str(photo_id), cached_path)
+                                get_preview_manager().load_preview(str(photo_id), cached_path)
                             except Exception as e:
-                                logger.warning(f"Failed to load cached preview for {photo_id}", exception=e)
+                                get_logger().warning(f"Failed to load cached preview for {photo_id}", exception=e)
                         else:
                             # Download and cache
                             thumb_data = download_image(
@@ -302,7 +300,7 @@ class PEXELS_OT_Search(bpy.types.Operator):
                             )
                             
                             # Save to cache
-                            cache_manager.put(
+                            get_cache_manager().put(
                                 thumb_url,
                                 thumb_data,
                                 variant="thumb",
@@ -316,7 +314,7 @@ class PEXELS_OT_Search(bpy.types.Operator):
                     except PexelsCancellationError:
                         raise InterruptedError("Search cancelled")
                     except Exception as e:
-                        logger.warning(f"Failed to load thumbnail for {photo_id}", exception=e)
+                        get_logger().warning(f"Failed to load thumbnail for {photo_id}", exception=e)
                 
                 if progress_callback:
                     progress = 0.3 + (0.7 * (i + 1) / total)
@@ -344,12 +342,12 @@ class PEXELS_OT_Search(bpy.types.Operator):
             photo_id = str(photo.id)
             thumb_url = item.thumb_url
             if thumb_url:
-                cached_path = cache_manager.get_file_path(thumb_url, variant="thumb")
+                cached_path = get_cache_manager().get_file_path(thumb_url, variant="thumb")
                 if cached_path:
                     try:
-                        preview_manager.load_preview(photo_id, cached_path)
+                        get_preview_manager().load_preview(photo_id, cached_path)
                     except Exception as e:
-                        logger.warning(f"Failed to load cached preview for {photo_id}", exception=e)
+                        get_logger().warning(f"Failed to load cached preview for {photo_id}", exception=e)
         
         # Set default selection
         if state.items:
@@ -373,7 +371,7 @@ class PEXELS_OT_Search(bpy.types.Operator):
             else:
                 state.selected_icon_storage = ""
         except Exception as e:
-            logger.warning("Failed to set default selection", exception=e)
+            get_logger().warning("Failed to set default selection", exception=e)
             state.selected_icon_storage = ""
     
     def _redraw_ui(self, context):
@@ -397,7 +395,7 @@ class PEXELS_OT_Cancel(bpy.types.Operator):
     def execute(self, context):
         """Execute cancellation."""
         # Cancel all tasks
-        cancelled_count = task_manager.cancel_all()
+        cancelled_count = get_task_manager().cancel_all()
         
         # Update state
         state = get_state(context)
@@ -408,7 +406,7 @@ class PEXELS_OT_Cancel(bpy.types.Operator):
         # Update progress tracker
         progress_tracker.cancel()
         
-        logger.info("Operations cancelled", cancelled_count=cancelled_count)
+        get_logger().info("Operations cancelled", cancelled_count=cancelled_count)
         self.report({'INFO'}, f"Cancelled {cancelled_count} operation(s)")
         
         return {'FINISHED'}
@@ -498,11 +496,11 @@ class PEXELS_OT_Import(bpy.types.Operator):
             return {'CANCELLED'}
         
         # Check network connectivity
-        if not network_manager.is_online():
+        if not get_network_manager().is_online():
             self.report({'ERROR'}, "No network connectivity. Check your internet connection.")
             return {'CANCELLED'}
         
-        logger.info("Starting image import", image_id=selected_item.item_id)
+        get_logger().info("Starting image import", image_id=selected_item.item_id)
         
         # Start progress tracking
         progress_tracker.start(total_items=100, initial_item="Downloading image...")
@@ -520,7 +518,7 @@ class PEXELS_OT_Import(bpy.types.Operator):
         )
         
         # Submit background task with STATIC callback handlers
-        task_manager.submit_task(
+        get_task_manager().submit_task(
             task_func=self._background_download,
             priority=TaskPriority.HIGH,
             on_complete=lambda task: ImportCallbackHandler.on_complete(callback_ctx, task),
@@ -560,9 +558,9 @@ class PEXELS_OT_Import(bpy.types.Operator):
             progress_callback(0.1, "Checking cache...")
         
         # Check cache first
-        cached_path = cache_manager.get_file_path(url, variant="full")
+        cached_path = get_cache_manager().get_file_path(url, variant="full")
         if cached_path:
-            logger.info("Using cached image", image_id=item_id)
+            get_logger().info("Using cached image", image_id=item_id)
             if progress_callback:
                 progress_callback(1.0, "Loaded from cache")
             return cached_path
@@ -582,7 +580,7 @@ class PEXELS_OT_Import(bpy.types.Operator):
             progress_callback(0.9, "Saving to cache...")
         
         # Save to cache
-        cache_manager.put(
+        get_cache_manager().put(
             url,
             image_data,
             variant="full",
@@ -590,7 +588,7 @@ class PEXELS_OT_Import(bpy.types.Operator):
         )
         
         # Get cached file path
-        cached_path = cache_manager.get_file_path(url, variant="full")
+        cached_path = get_cache_manager().get_file_path(url, variant="full")
         if cached_path:
             return cached_path
         
@@ -620,22 +618,22 @@ class PEXELS_OT_ClearCache(bpy.types.Operator):
         """Execute cache clearing."""
         try:
             # Clear preview manager
-            preview_manager.clear_previews()
+            get_preview_manager().clear_previews()
             
             # Clear cache manager
-            memory_cleared, disk_cleared = cache_manager.clear()
+            memory_cleared, disk_cleared = get_cache_manager().clear()
             
             # Clear state
             state = get_state(context)
             if state:
                 state.clear_results()
             
-            logger.info("Cache cleared", memory_items=memory_cleared, disk_items=disk_cleared)
+            get_logger().info("Cache cleared", memory_items=memory_cleared, disk_items=disk_cleared)
             self.report({'INFO'}, f"Cache cleared: {memory_cleared} memory items, {disk_cleared} disk items")
             return {'FINISHED'}
             
         except Exception as e:
-            logger.error("Failed to clear cache", exception=e)
+            get_logger().error("Failed to clear cache", exception=e)
             self.report({'ERROR'}, f"Failed to clear cache: {e}")
             return {'CANCELLED'}
 
@@ -803,7 +801,7 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
         try:
             return load_image_from_url(url)
         except Exception as e:
-            logger.warning("Failed to load image for overlay", exception=e)
+            get_logger().warning("Failed to load image for overlay", exception=e)
             return None
 
     def invoke(self, context, event):
@@ -992,14 +990,14 @@ class PEXELS_OT_OverlayWidget(bpy.types.Operator):
                 bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
                 self._handle = None
         except Exception as e:
-            logger.warning("Failed to remove draw handler", exception=e)
+            get_logger().warning("Failed to remove draw handler", exception=e)
         
         try:
             if self._timer is not None:
                 context.window_manager.event_timer_remove(self._timer)
                 self._timer = None
         except Exception as e:
-            logger.warning("Failed to remove timer", exception=e)
+            get_logger().warning("Failed to remove timer", exception=e)
         
         try:
             if self._cursor_set:
@@ -1054,7 +1052,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
             return {'CANCELLED'}
         
         # Check network connectivity
-        if not network_manager.is_online():
+        if not get_network_manager().is_online():
             self.report({'ERROR'}, "No network connectivity. Check your internet connection.")
             return {'CANCELLED'}
         
@@ -1063,7 +1061,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
         for item in state.items:
             if item.full_url:
                 # Check if already cached
-                cached_path = cache_manager.get_file_path(item.full_url, variant="full")
+                cached_path = get_cache_manager().get_file_path(item.full_url, variant="full")
                 if not cached_path:
                     urls_to_cache.append({
                         'url': item.full_url,
@@ -1075,7 +1073,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
             self.report({'INFO'}, "All images are already cached")
             return {'FINISHED'}
         
-        logger.info("Starting batch image caching", total_images=len(urls_to_cache))
+        get_logger().info("Starting batch image caching", total_images=len(urls_to_cache))
         
         # Initialize caching state
         state.caching_in_progress = True
@@ -1092,7 +1090,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
         callback_ctx = create_cache_context(len(urls_to_cache))
         
         # Submit background task with STATIC callback handlers
-        task_manager.submit_task(
+        get_task_manager().submit_task(
             task_func=self._background_cache,
             priority=TaskPriority.NORMAL,
             on_complete=lambda task: CacheCallbackHandler.on_complete(callback_ctx, task),
@@ -1203,7 +1201,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
                 total_bytes += len(image_data)
                 
                 # Save to cache
-                cache_manager.put(
+                get_cache_manager().put(
                     url,
                     image_data,
                     variant="full",
@@ -1215,7 +1213,7 @@ class PEXELS_OT_CacheImages(bpy.types.Operator):
             except PexelsCancellationError:
                 raise InterruptedError("Caching cancelled")
             except Exception as e:
-                logger.warning(f"Failed to cache image {item_id}", exception=e)
+                get_logger().warning(f"Failed to cache image {item_id}", exception=e)
                 failed_count += 1
         
         # Final progress update
@@ -1258,7 +1256,7 @@ class PEXELS_OT_CancelCaching(bpy.types.Operator):
         state = get_state(context)
         
         # Cancel all tasks
-        cancelled_count = task_manager.cancel_all()
+        cancelled_count = get_task_manager().cancel_all()
         
         # Update state
         if state:
@@ -1266,7 +1264,7 @@ class PEXELS_OT_CancelCaching(bpy.types.Operator):
             state.caching_error_message = "Cancelled by user"
             state.operation_status = 'IDLE'
         
-        logger.info("Caching cancelled", cancelled_count=cancelled_count)
+        get_logger().info("Caching cancelled", cancelled_count=cancelled_count)
         self.report({'INFO'}, "Caching cancelled")
         
         return {'FINISHED'}
@@ -1288,10 +1286,11 @@ class PEXELS_OT_ToggleFavorite(bpy.types.Operator):
     
     def execute(self, context):
         """Execute favorite toggle."""
-        if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+        if not ENHANCED_CACHING_AVAILABLE:
             self.report({'ERROR'}, "Favorites feature not available")
             return {'CANCELLED'}
         
+        favorites_manager = get_favorites_manager()
         state = get_state(context)
         if state is None:
             self.report({'ERROR'}, "Addon state not available")
@@ -1324,10 +1323,10 @@ class PEXELS_OT_ToggleFavorite(bpy.types.Operator):
         )
         
         if is_favorite:
-            logger.info(f"Added to favorites: {item.item_id}")
+            get_logger().info(f"Added to favorites: {item.item_id}")
             self.report({'INFO'}, f"Added to favorites: {item.photographer}'s image")
         else:
-            logger.info(f"Removed from favorites: {item.item_id}")
+            get_logger().info(f"Removed from favorites: {item.item_id}")
             self.report({'INFO'}, f"Removed from favorites")
         
         # Force UI update
@@ -1375,9 +1374,11 @@ class PEXELS_OT_ImportFavorite(bpy.types.Operator):
     
     def execute(self, context):
         """Execute favorite import."""
-        if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+        if not ENHANCED_CACHING_AVAILABLE:
             self.report({'ERROR'}, "Favorites feature not available")
             return {'CANCELLED'}
+        
+        favorites_manager = get_favorites_manager()
         
         if self.pexels_id <= 0:
             self.report({'WARNING'}, "No favorite selected")
@@ -1390,17 +1391,17 @@ class PEXELS_OT_ImportFavorite(bpy.types.Operator):
             return {'CANCELLED'}
         
         # Check online access if not cached
-        cached_path = cache_manager.get_file_path(favorite.full_url, variant="full")
+        cached_path = get_cache_manager().get_file_path(favorite.full_url, variant="full")
         if not cached_path:
             if not check_online_access():
                 self.report({'ERROR'}, get_online_access_disabled_message())
                 return {'CANCELLED'}
             
-            if not network_manager.is_online():
+            if not get_network_manager().is_online():
                 self.report({'ERROR'}, "No network connectivity. Check your internet connection.")
                 return {'CANCELLED'}
         
-        logger.info("Importing favorite", pexels_id=self.pexels_id)
+        get_logger().info("Importing favorite", pexels_id=self.pexels_id)
         
         # Record use
         favorites_manager.record_use(self.pexels_id)
@@ -1418,14 +1419,14 @@ class PEXELS_OT_ImportFavorite(bpy.types.Operator):
                 )
                 
                 # Save to cache
-                cache_manager.put(
+                get_cache_manager().put(
                     favorite.full_url,
                     image_data,
                     variant="full",
                     metadata={"image_id": str(self.pexels_id)}
                 )
                 
-                image_path = cache_manager.get_file_path(favorite.full_url, variant="full")
+                image_path = get_cache_manager().get_file_path(favorite.full_url, variant="full")
                 if not image_path:
                     # Fallback to temp file
                     image_path = write_temp_file(f"pexels_{self.pexels_id}.jpg", image_data)
@@ -1445,7 +1446,7 @@ class PEXELS_OT_ImportFavorite(bpy.types.Operator):
             return {'FINISHED'}
             
         except Exception as e:
-            logger.error("Failed to import favorite", exception=e)
+            get_logger().error("Failed to import favorite", exception=e)
             self.report({'ERROR'}, f"Import failed: {e}")
             return {'CANCELLED'}
 
@@ -1460,7 +1461,7 @@ class PEXELS_OT_CheckFavoriteStatus(bpy.types.Operator):
     
     @classmethod
     def poll(cls, context):
-        return ENHANCED_CACHING_AVAILABLE and favorites_manager is not None
+        return ENHANCED_CACHING_AVAILABLE
     
     def execute(self, context):
         state = get_state(context)
@@ -1471,7 +1472,7 @@ class PEXELS_OT_CheckFavoriteStatus(bpy.types.Operator):
         if not item:
             return {'CANCELLED'}
         
-        is_fav = favorites_manager.is_favorite(item.item_id)
+        is_fav = get_favorites_manager().is_favorite(item.item_id)
         self.report({'INFO'}, f"Favorite: {'Yes' if is_fav else 'No'}")
         
         return {'FINISHED'}
@@ -1487,9 +1488,9 @@ def is_favorite(pexels_id: int) -> bool:
     Returns:
         True if favorited
     """
-    if not ENHANCED_CACHING_AVAILABLE or favorites_manager is None:
+    if not ENHANCED_CACHING_AVAILABLE:
         return False
-    return favorites_manager.is_favorite(pexels_id)
+    return get_favorites_manager().is_favorite(pexels_id)
 
 
 # Operator classes for registration

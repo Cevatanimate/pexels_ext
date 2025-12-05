@@ -1,7 +1,7 @@
 """
 Background Task Manager for Pexels Extension.
 
-Provides a thread-safe task queue system with worker thread pool,
+Provides a multiprocessing task queue system with worker pool,
 priority levels, cancellation support, and main thread callbacks.
 
 IMPORTANT: This module implements safe callback handling to prevent
@@ -9,13 +9,21 @@ StructRNA errors when operator instances are garbage collected.
 Callbacks should never capture operator 'self' references.
 """
 
+import multiprocessing
 import threading
 import queue
 import time
 import uuid
+import traceback
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Callable, Optional, Any, Dict, List
+from typing import Callable, Optional, Any, Dict, List, Tuple
+
+# Try to import bpy, but handle failure for worker processes
+try:
+    import bpy
+except ImportError:
+    bpy = None
 
 
 class TaskPriority(IntEnum):
@@ -32,6 +40,7 @@ class TaskStatus(IntEnum):
     COMPLETED = 2
     FAILED = 3
     CANCELLED = 4
+    PROGRESS = 5
 
 
 @dataclass
@@ -53,7 +62,6 @@ class Task:
         on_progress: Callback for progress updates (called on main thread)
         on_complete: Callback when task completes (called on main thread)
         on_error: Callback when task fails (called on main thread)
-        cancellation_token: Event to signal cancellation
         created_at: Timestamp when task was created
         started_at: Timestamp when task started executing
         completed_at: Timestamp when task finished
@@ -72,7 +80,6 @@ class Task:
     on_progress: Optional[Callable[['Task'], None]] = None
     on_complete: Optional[Callable[['Task'], None]] = None
     on_error: Optional[Callable[['Task', Exception], None]] = None
-    cancellation_token: Optional[threading.Event] = field(default=None)
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -83,33 +90,82 @@ class Task:
         if self.priority != other.priority:
             return self.priority < other.priority
         return self.created_at < other.created_at
+
+
+def _worker_process(
+    input_queue: multiprocessing.Queue,
+    result_queue: multiprocessing.Queue,
+    shutdown_event: multiprocessing.Event
+) -> None:
+    """
+    Worker process function.
     
-    def is_cancellation_requested(self) -> bool:
-        """Check if cancellation has been requested."""
-        return self.cancellation_token is not None and self.cancellation_token.is_set()
+    Args:
+        input_queue: Queue to receive tasks
+        result_queue: Queue to send results
+        shutdown_event: Event to signal shutdown
+    """
+    while not shutdown_event.is_set():
+        try:
+            # Get task from queue with timeout
+            try:
+                task_data = input_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            
+            task_id, func, args, kwargs = task_data
+            
+            # Report running
+            result_queue.put((task_id, TaskStatus.RUNNING, None, None))
+            
+            try:
+                # Create progress callback
+                def progress_callback(progress: float, message: str = "", extra_data: Dict = None) -> None:
+                    result_queue.put((
+                        task_id, 
+                        TaskStatus.PROGRESS, 
+                        None, 
+                        {'progress': progress, 'message': message, 'extra_data': extra_data}
+                    ))
+                
+                # Execute task
+                # Note: We don't pass cancellation_token anymore as it's hard to share across processes
+                # reliably without a manager. Tasks should be short or check their own logic.
+                # We pass progress_callback if the function accepts it.
+                
+                # Simple inspection to see if we should pass progress_callback
+                # This is a bit hacky but works for our known tasks
+                import inspect
+                try:
+                    sig = inspect.signature(func)
+                    if 'progress_callback' in sig.parameters:
+                        kwargs['progress_callback'] = progress_callback
+                except Exception:
+                    pass
+                
+                result = func(*args, **kwargs)
+                
+                # Report success
+                result_queue.put((task_id, TaskStatus.COMPLETED, result, None))
+                
+            except Exception as e:
+                # Report failure
+                # We send the exception string to avoid pickling issues with complex exceptions
+                result_queue.put((task_id, TaskStatus.FAILED, str(e), None))
+                
+        except Exception as e:
+            # Fatal worker error
+            print(f"[TaskManager] Worker process error: {e}")
+            time.sleep(1.0)
 
 
 def _is_blender_context_valid() -> bool:
-    """
-    Check if Blender context is valid for callback execution.
-    
-    This is crucial for preventing StructRNA errors when callbacks
-    are invoked after operator instances have been destroyed.
-    
-    Returns:
-        True if context is valid and safe to use
-    """
+    """Check if Blender context is valid."""
     try:
-        import bpy
-        
-        # Check if we have a valid context
-        if bpy.context is None:
+        if bpy is None or bpy.context is None:
             return False
-        
-        # Check if scene exists
         if not hasattr(bpy.context, 'scene') or bpy.context.scene is None:
             return False
-        
         return True
     except (ReferenceError, AttributeError, RuntimeError, ImportError):
         return False
@@ -117,254 +173,129 @@ def _is_blender_context_valid() -> bool:
 
 class TaskManager:
     """
-    Thread-safe background task manager with worker thread pool.
+    Multiprocessing background task manager.
     
-    Implements singleton pattern to ensure only one task manager exists.
-    Provides task submission, cancellation, and status tracking.
-    
-    IMPORTANT: Callbacks passed to submit_task() should NOT capture
-    operator 'self' references. Use CallbackContext from callback_handler.py
-    instead to pass data to callbacks safely.
-    
-    Usage:
-        from .callback_handler import (
-            SearchCallbackHandler, 
-            create_search_context
-        )
-        
-        ctx = create_search_context(query, page, per_page)
-        
-        task_id = task_manager.submit_task(
-            task_func=my_task,
-            priority=TaskPriority.NORMAL,
-            on_complete=lambda t: SearchCallbackHandler.on_complete(ctx, t),
-            on_error=lambda t, e: SearchCallbackHandler.on_error(ctx, t, e),
-            on_progress=lambda t: SearchCallbackHandler.on_progress(ctx, t)
-        )
+    Implements singleton pattern (lazy loaded).
     """
     
     _instance: Optional['TaskManager'] = None
-    _instance_lock: threading.Lock = threading.Lock()
     
     # Default configuration
     DEFAULT_WORKER_COUNT = 4
-    QUEUE_TIMEOUT = 0.1  # Seconds to wait for queue items
-    
-    def __new__(cls, worker_count: int = DEFAULT_WORKER_COUNT) -> 'TaskManager':
-        """Singleton pattern implementation."""
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    instance = super().__new__(cls)
-                    instance._initialized = False
-                    cls._instance = instance
-        return cls._instance
     
     def __init__(self, worker_count: int = DEFAULT_WORKER_COUNT):
-        """
-        Initialize the task manager.
-        
-        Args:
-            worker_count: Number of worker threads (default: 4)
-        """
-        if self._initialized:
-            return
-        
-        self._initialized = True
+        """Initialize the task manager."""
         self._worker_count = worker_count
         
-        # Thread-safe task queue (priority queue)
-        self._task_queue: queue.PriorityQueue = queue.PriorityQueue()
+        # Multiprocessing queues
+        self._input_queue = multiprocessing.Queue()
+        self._result_queue = multiprocessing.Queue()
+        self._shutdown_event = multiprocessing.Event()
         
-        # Active tasks dictionary with lock
+        # Active tasks dictionary (in main process)
         self._active_tasks: Dict[str, Task] = {}
         self._tasks_lock = threading.RLock()
         
-        # Worker threads
-        self._workers: List[threading.Thread] = []
-        self._shutdown_event = threading.Event()
+        # Worker processes
+        self._workers: List[multiprocessing.Process] = []
         
-        # Start worker threads
+        # Start workers
         self._start_workers()
+        
+        # Start result poller
+        self._start_result_poller()
     
     def _start_workers(self) -> None:
-        """Start worker threads."""
+        """Start worker processes."""
         for i in range(self._worker_count):
-            worker = threading.Thread(
-                target=self._worker_loop,
-                name=f"PexelsTaskWorker-{i}",
+            worker = multiprocessing.Process(
+                target=_worker_process,
+                args=(self._input_queue, self._result_queue, self._shutdown_event),
+                name=f"PexelsWorker-{i}",
                 daemon=True
             )
             worker.start()
             self._workers.append(worker)
     
-    def _worker_loop(self) -> None:
-        """Main worker thread loop."""
-        while not self._shutdown_event.is_set():
-            try:
-                # Get task from queue with timeout
-                task = self._task_queue.get(timeout=self.QUEUE_TIMEOUT)
-                
-                # Check if task was cancelled before starting
-                if task.status == TaskStatus.CANCELLED:
-                    self._task_queue.task_done()
-                    continue
-                
-                # Execute the task
-                self._execute_task(task)
-                self._task_queue.task_done()
-                
-            except queue.Empty:
-                # No tasks available, continue waiting
-                continue
-            except Exception as e:
-                # Log unexpected errors but keep worker running
-                print(f"[TaskManager] Worker error: {e}")
+    def _start_result_poller(self) -> None:
+        """Start the result polling timer in Blender."""
+        if bpy:
+            bpy.app.timers.register(self._poll_results, first_interval=0.1)
     
-    def _execute_task(self, task: Task) -> None:
+    def _poll_results(self) -> float:
         """
-        Execute a single task.
-        
-        Args:
-            task: The task to execute
+        Poll for results from worker processes.
+        Returns delay for next poll.
         """
-        # Update task status
-        task.status = TaskStatus.RUNNING
-        task.started_at = time.time()
+        if self._shutdown_event.is_set():
+            return None  # Stop timer
         
         try:
-            # Check for cancellation before starting
-            if task.is_cancellation_requested():
-                task.status = TaskStatus.CANCELLED
-                return
-            
-            # Create progress callback wrapper that stores extra data
-            def progress_callback(progress: float, message: str = "", extra_data: Dict = None) -> None:
-                self._update_progress(task, progress, message, extra_data)
-            
-            # Execute the task function
-            # Pass cancellation_token and progress_callback as keyword arguments
-            task.result = task.func(
-                *task.args,
-                cancellation_token=task.cancellation_token,
-                progress_callback=progress_callback,
-                **task.kwargs
-            )
-            
-            # Check for cancellation after completion
-            if task.is_cancellation_requested():
-                task.status = TaskStatus.CANCELLED
-                return
-            
-            # Mark as completed
-            task.status = TaskStatus.COMPLETED
-            task.completed_at = time.time()
-            task.progress = 1.0
-            
-            # Schedule completion callback on main thread
-            if task.on_complete:
-                self._schedule_main_thread_callback(task.on_complete, task)
-                
-        except InterruptedError:
-            # Task was cancelled
-            task.status = TaskStatus.CANCELLED
-            task.completed_at = time.time()
-            
-        except Exception as e:
-            # Task failed
-            task.status = TaskStatus.FAILED
-            task.error = e
-            task.completed_at = time.time()
-            
-            # Schedule error callback on main thread
-            if task.on_error:
-                self._schedule_main_thread_callback(task.on_error, task, e)
-    
-    def _update_progress(
-        self, 
-        task: Task, 
-        progress: float, 
-        message: str,
-        extra_data: Optional[Dict] = None
-    ) -> None:
-        """
-        Update task progress and notify callbacks.
-        
-        Args:
-            task: The task to update
-            progress: Progress value (0.0 to 1.0)
-            message: Status message
-            extra_data: Additional progress data (e.g., ETA, speed)
-        """
-        task.progress = max(0.0, min(1.0, progress))
-        task.message = message
-        task.progress_data = extra_data
-        
-        # Schedule progress callback on main thread
-        if task.on_progress:
-            self._schedule_main_thread_callback(task.on_progress, task)
-    
-    def _schedule_main_thread_callback(self, callback: Callable, *args) -> None:
-        """
-        Schedule a callback to run on Blender's main thread.
-        
-        This method implements safe callback execution that:
-        1. Validates Blender context before execution
-        2. Catches ReferenceError for destroyed RNA structures
-        3. Logs errors without crashing
-        
-        Args:
-            callback: The callback function
-            *args: Arguments to pass to the callback
-        """
-        try:
-            import bpy
-            
-            def safe_callback() -> None:
-                """
-                Wrapper that safely executes the callback.
-                
-                This prevents StructRNA errors by:
-                1. Checking if Blender context is still valid
-                2. Catching ReferenceError exceptions
-                3. Handling any other exceptions gracefully
-                """
+            # Process up to 10 results per tick to avoid freezing UI
+            for _ in range(10):
                 try:
-                    # Validate context before executing callback
-                    if not _is_blender_context_valid():
-                        print("[TaskManager] Callback skipped - Blender context invalid")
-                        return None
-                    
-                    # Execute the callback
-                    callback(*args)
-                    
-                except ReferenceError as e:
-                    # This is the StructRNA error we're trying to prevent
-                    # It means the operator instance was garbage collected
-                    print(f"[TaskManager] Callback skipped - RNA structure removed: {e}")
-                    
-                except AttributeError as e:
-                    # May occur if accessing destroyed objects
-                    if "StructRNA" in str(e) or "removed" in str(e).lower():
-                        print(f"[TaskManager] Callback skipped - object removed: {e}")
-                    else:
-                        print(f"[TaskManager] Callback AttributeError: {e}")
+                    result_data = self._result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                
+                task_id, status, result_or_error, progress_info = result_data
+                self._handle_task_update(task_id, status, result_or_error, progress_info)
+                
+        except Exception as e:
+            print(f"[TaskManager] Polling error: {e}")
+        
+        return 0.1  # Poll every 100ms
+    
+    def _handle_task_update(
+        self, 
+        task_id: str, 
+        status: TaskStatus, 
+        result_or_error: Any, 
+        progress_info: Optional[Dict]
+    ) -> None:
+        """Handle task update on main thread."""
+        with self._tasks_lock:
+            task = self._active_tasks.get(task_id)
+            if not task:
+                return
+            
+            if status == TaskStatus.RUNNING:
+                task.status = TaskStatus.RUNNING
+                task.started_at = time.time()
+                
+            elif status == TaskStatus.PROGRESS:
+                if progress_info:
+                    task.progress = progress_info.get('progress', 0.0)
+                    task.message = progress_info.get('message', "")
+                    task.progress_data = progress_info.get('extra_data')
+                    if task.on_progress:
+                        self._safe_callback(task.on_progress, task)
                         
-                except Exception as e:
-                    # Log other errors but don't crash
-                    print(f"[TaskManager] Callback error: {e}")
-                    
-                return None  # Don't repeat the timer
-            
-            # Register the safe callback with Blender's timer system
-            bpy.app.timers.register(safe_callback, first_interval=0.0)
-            
-        except ImportError:
-            # Not running in Blender, execute directly (for testing)
-            try:
-                callback(*args)
-            except Exception as e:
-                print(f"[TaskManager] Callback error (non-Blender): {e}")
+            elif status == TaskStatus.COMPLETED:
+                task.status = TaskStatus.COMPLETED
+                task.result = result_or_error
+                task.completed_at = time.time()
+                task.progress = 1.0
+                if task.on_complete:
+                    self._safe_callback(task.on_complete, task)
+                # We keep the task in _active_tasks for a while or until cleanup
+                
+            elif status == TaskStatus.FAILED:
+                task.status = TaskStatus.FAILED
+                # Reconstruct exception from string if needed, or just store string
+                task.error = Exception(result_or_error) if isinstance(result_or_error, str) else result_or_error
+                task.completed_at = time.time()
+                if task.on_error:
+                    self._safe_callback(task.on_error, task, task.error)
+    
+    def _safe_callback(self, callback: Callable, *args) -> None:
+        """Execute callback safely."""
+        try:
+            if not _is_blender_context_valid():
+                return
+            callback(*args)
+        except Exception as e:
+            print(f"[TaskManager] Callback error: {e}")
     
     def submit_task(
         self,
@@ -379,38 +310,14 @@ class TaskManager:
         """
         Submit a task for background execution.
         
-        The task function should accept these keyword arguments:
-        - cancellation_token: threading.Event to check for cancellation
-        - progress_callback: Callable[[float, str, dict], None] to report progress
-        
-        IMPORTANT: Callbacks should NOT capture operator 'self' references.
-        Use CallbackContext from callback_handler.py instead.
-        
-        Example:
-            from .callback_handler import (
-                SearchCallbackHandler,
-                create_search_context
-            )
-            
-            ctx = create_search_context(query, page, per_page)
-            
-            task_id = task_manager.submit_task(
-                task_func=background_search,
-                priority=TaskPriority.HIGH,
-                on_complete=lambda t: SearchCallbackHandler.on_complete(ctx, t),
-                on_error=lambda t, e: SearchCallbackHandler.on_error(ctx, t, e),
-                on_progress=lambda t: SearchCallbackHandler.on_progress(ctx, t),
-                kwargs={'query': query, 'page': page}
-            )
-        
         Args:
-            task_func: The function to execute
-            priority: Task priority (HIGH, NORMAL, LOW)
-            on_complete: Callback when task completes successfully
+            task_func: The function to execute (must be picklable)
+            priority: Task priority (currently ignored by multiprocessing queue)
+            on_complete: Callback when task completes
             on_progress: Callback for progress updates
             on_error: Callback when task fails
-            args: Positional arguments for task_func
-            kwargs: Keyword arguments for task_func
+            args: Positional arguments
+            kwargs: Keyword arguments
             
         Returns:
             Task ID string
@@ -425,171 +332,76 @@ class TaskManager:
             priority=priority,
             on_complete=on_complete,
             on_progress=on_progress,
-            on_error=on_error,
-            cancellation_token=threading.Event()
+            on_error=on_error
         )
         
-        # Add to active tasks
         with self._tasks_lock:
             self._active_tasks[task_id] = task
         
-        # Add to queue
-        self._task_queue.put(task)
+        # Put simplified payload into queue
+        # Note: func, args, kwargs must be picklable
+        self._input_queue.put((task_id, task_func, args, kwargs or {}))
         
         return task_id
     
     def cancel_task(self, task_id: str) -> bool:
         """
-        Request cancellation of a specific task.
-        
-        Args:
-            task_id: The task ID to cancel
-            
-        Returns:
-            True if task was found and cancellation requested
+        Request cancellation of a task.
+        Note: With multiprocessing, we can't easily interrupt a running process
+        without terminating it. This implementation only cancels pending tasks.
         """
         with self._tasks_lock:
             if task_id in self._active_tasks:
                 task = self._active_tasks[task_id]
-                
-                # Signal cancellation
-                if task.cancellation_token:
-                    task.cancellation_token.set()
-                
-                # Update status if not already running
                 if task.status == TaskStatus.PENDING:
                     task.status = TaskStatus.CANCELLED
-                
-                return True
+                    return True
         return False
     
     def cancel_all(self) -> int:
-        """
-        Cancel all pending and running tasks.
-        
-        Returns:
-            Number of tasks cancelled
-        """
-        cancelled_count = 0
-        
+        """Cancel all pending tasks."""
+        count = 0
         with self._tasks_lock:
             for task in self._active_tasks.values():
-                if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-                    if task.cancellation_token:
-                        task.cancellation_token.set()
-                    if task.status == TaskStatus.PENDING:
-                        task.status = TaskStatus.CANCELLED
-                    cancelled_count += 1
-        
-        return cancelled_count
+                if task.status == TaskStatus.PENDING:
+                    task.status = TaskStatus.CANCELLED
+                    count += 1
+        return count
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
-        """
-        Get the current status of a task.
-        
-        Args:
-            task_id: The task ID to query
-            
-        Returns:
-            Task object or None if not found
-        """
+        """Get task status."""
         with self._tasks_lock:
             return self._active_tasks.get(task_id)
     
-    def get_active_task_count(self) -> int:
-        """
-        Get the number of active (pending or running) tasks.
-        
-        Returns:
-            Number of active tasks
-        """
-        with self._tasks_lock:
-            return sum(
-                1 for task in self._active_tasks.values()
-                if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
-            )
-    
-    def get_pending_task_count(self) -> int:
-        """
-        Get the number of pending tasks in the queue.
-        
-        Returns:
-            Number of pending tasks
-        """
-        return self._task_queue.qsize()
-    
-    def cleanup_completed_tasks(self, max_age_seconds: float = 300.0) -> int:
-        """
-        Remove completed/failed/cancelled tasks older than max_age.
-        
-        Args:
-            max_age_seconds: Maximum age in seconds (default: 5 minutes)
-            
-        Returns:
-            Number of tasks removed
-        """
-        removed_count = 0
-        current_time = time.time()
-        
-        with self._tasks_lock:
-            tasks_to_remove = []
-            
-            for task_id, task in self._active_tasks.items():
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
-                    if task.completed_at and (current_time - task.completed_at) > max_age_seconds:
-                        tasks_to_remove.append(task_id)
-            
-            for task_id in tasks_to_remove:
-                del self._active_tasks[task_id]
-                removed_count += 1
-        
-        return removed_count
-    
-    def shutdown(self, wait: bool = True, timeout: float = 2.0) -> None:
-        """
-        Shutdown the task manager and stop all workers.
-        
-        Args:
-            wait: Whether to wait for workers to finish
-            timeout: Maximum time to wait for each worker
-        """
-        # Signal shutdown
+    def shutdown(self) -> None:
+        """Shutdown the task manager."""
         self._shutdown_event.set()
         
-        # Cancel all pending tasks
-        self.cancel_all()
+        # Terminate workers
+        for worker in self._workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=0.1)
         
-        if wait:
-            # Wait for workers to finish
-            for worker in self._workers:
-                worker.join(timeout=timeout)
-        
-        # Clear workers list
         self._workers.clear()
         
-        # Reset initialization flag for potential restart
-        self._initialized = False
-        TaskManager._instance = None
-    
-    def is_running(self) -> bool:
-        """
-        Check if the task manager is running.
-        
-        Returns:
-            True if task manager is active
-        """
-        return self._initialized and not self._shutdown_event.is_set()
+        # Clear queues
+        while not self._input_queue.empty():
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+                
+        global task_manager
+        task_manager = None
 
 
-# Global instance
-task_manager = TaskManager()
-
+# Global instance (lazy loaded)
+task_manager = None
 
 def get_task_manager() -> TaskManager:
-    """
-    Get the global task manager instance.
-    
-    Returns:
-        TaskManager instance
-    """
+    """Get the global task manager instance."""
+    global task_manager
+    if task_manager is None:
+        task_manager = TaskManager()
     return task_manager

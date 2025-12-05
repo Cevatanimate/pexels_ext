@@ -11,7 +11,7 @@ from typing import Optional, List, Tuple, Any
 
 import bpy
 
-from .logger import logger
+from .logger import get_logger
 
 
 # Thread lock for enum items access
@@ -64,8 +64,8 @@ def _get_preview_manager():
         PreviewManager instance or None
     """
     try:
-        from .utils import preview_manager
-        return preview_manager
+        from .utils import get_preview_manager
+        return get_preview_manager()
     except ImportError:
         return None
 
@@ -161,7 +161,7 @@ def pexels_enum_items(self, context) -> List[Tuple[str, str, str, int, int]]:
             
         except Exception as e:
             # Log error but don't crash - return empty list
-            logger.warning(f"Error generating enum items: {e}")
+            get_logger().warning(f"Error generating enum items: {e}")
             return []
 
     return items
@@ -355,10 +355,10 @@ class PEXELS_State(bpy.types.PropertyGroup):
         # Use persistent Blender property for storage
         value = self.selected_icon_storage if self.selected_icon_storage else None
         
-        logger.debug(f"[DEBUG] _get_selected_icon called, stored value: '{value}'")
+        get_logger().debug(f"[DEBUG] _get_selected_icon called, stored value: '{value}'")
         
         if value is None or value == "":
-            logger.debug("[DEBUG] _get_selected_icon: No stored value, returning 0")
+            get_logger().debug("[DEBUG] _get_selected_icon: No stored value, returning 0")
             return 0
         
         # Find the index of the stored identifier in current enum items
@@ -371,14 +371,14 @@ class PEXELS_State(bpy.types.PropertyGroup):
             
             with _enum_items_lock:
                 enum_items = pexels_enum_items(self, context)
-                logger.debug(f"[DEBUG] _get_selected_icon: enum_items count = {len(enum_items)}")
+                get_logger().debug(f"[DEBUG] _get_selected_icon: enum_items count = {len(enum_items)}")
                 for i, item in enumerate(enum_items):
                     if item[0] == value:  # item[0] is the identifier
-                        logger.debug(f"[DEBUG] _get_selected_icon: Found match at index {i} for '{value}'")
+                        get_logger().debug(f"[DEBUG] _get_selected_icon: Found match at index {i} for '{value}'")
                         return i
-                logger.debug(f"[DEBUG] _get_selected_icon: No match found for '{value}' in enum items")
+                get_logger().debug(f"[DEBUG] _get_selected_icon: No match found for '{value}' in enum items")
         except Exception as e:
-            logger.warning(f"[DEBUG] _get_selected_icon exception: {e}")
+            get_logger().warning(f"[DEBUG] _get_selected_icon exception: {e}")
         
         return 0
     
@@ -392,7 +392,7 @@ class PEXELS_State(bpy.types.PropertyGroup):
         Args:
             value: The enum index to set
         """
-        logger.debug(f"[DEBUG] _set_selected_icon called with index: {value}")
+        get_logger().debug(f"[DEBUG] _set_selected_icon called with index: {value}")
         
         try:
             context = None
@@ -403,17 +403,17 @@ class PEXELS_State(bpy.types.PropertyGroup):
             
             with _enum_items_lock:
                 enum_items = pexels_enum_items(self, context)
-                logger.debug(f"[DEBUG] _set_selected_icon: enum_items count = {len(enum_items)}")
+                get_logger().debug(f"[DEBUG] _set_selected_icon: enum_items count = {len(enum_items)}")
                 if enum_items and 0 <= value < len(enum_items):
                     identifier = enum_items[value][0]  # item[0] is the identifier
                     # Store in persistent Blender property
                     self.selected_icon_storage = identifier
-                    logger.debug(f"[DEBUG] _set_selected_icon: Stored identifier '{identifier}'")
+                    get_logger().debug(f"[DEBUG] _set_selected_icon: Stored identifier '{identifier}'")
                 else:
                     self.selected_icon_storage = ""
-                    logger.debug(f"[DEBUG] _set_selected_icon: Invalid index {value}, cleared storage")
+                    get_logger().debug(f"[DEBUG] _set_selected_icon: Invalid index {value}, cleared storage")
         except Exception as e:
-            logger.warning(f"[DEBUG] _set_selected_icon exception: {e}")
+            get_logger().warning(f"[DEBUG] _set_selected_icon exception: {e}")
             self.selected_icon_storage = ""
     
     def clear_results(self):
@@ -427,14 +427,14 @@ class PEXELS_State(bpy.types.PropertyGroup):
         
         # Reset selected icon storage to empty to avoid enum validation errors
         self.selected_icon_storage = ""
-        logger.debug("[DEBUG] clear_results: Cleared selected_icon_storage")
+        get_logger().debug("[DEBUG] clear_results: Cleared selected_icon_storage")
         
         # Clear preview manager
         preview_mgr = _get_preview_manager()
         if preview_mgr:
             preview_mgr.clear_previews()
         
-        logger.debug("Search results cleared")
+        get_logger().debug("Search results cleared")
     
     def get_selected_item(self) -> Optional['PEXELS_Item']:
         """
@@ -444,19 +444,19 @@ class PEXELS_State(bpy.types.PropertyGroup):
             PEXELS_Item or None: Selected item or None if no selection
         """
         current_selection = self.selected_icon_storage if self.selected_icon_storage else None
-        logger.debug(f"[DEBUG] get_selected_item: current_selection = '{current_selection}'")
+        get_logger().debug(f"[DEBUG] get_selected_item: current_selection = '{current_selection}'")
         
         if not current_selection:
-            logger.debug("[DEBUG] get_selected_item: No selection, returning None")
+            get_logger().debug("[DEBUG] get_selected_item: No selection, returning None")
             return None
 
         try:
             selected_id = int(current_selection)
             result = next((item for item in self.items if item.item_id == selected_id), None)
-            logger.debug(f"[DEBUG] get_selected_item: Found item = {result is not None}, id = {selected_id}")
+            get_logger().debug(f"[DEBUG] get_selected_item: Found item = {result is not None}, id = {selected_id}")
             return result
         except (ValueError, AttributeError, TypeError) as e:
-            logger.debug(f"[DEBUG] get_selected_item: Exception {e}")
+            get_logger().debug(f"[DEBUG] get_selected_item: Exception {e}")
             return None
 
     def _validate_selected_icon(self, value: str) -> Optional[str]:
@@ -469,7 +469,7 @@ class PEXELS_State(bpy.types.PropertyGroup):
         Returns:
             str or None: Valid enum value or None if invalid
         """
-        logger.debug(f"[DEBUG] _validate_selected_icon: validating '{value}'")
+        get_logger().debug(f"[DEBUG] _validate_selected_icon: validating '{value}'")
         
         if not value:
             return None
@@ -489,15 +489,15 @@ class PEXELS_State(bpy.types.PropertyGroup):
                 valid_identifiers = {item[0] for item in enum_items}
 
             if value in valid_identifiers:
-                logger.debug(f"[DEBUG] _validate_selected_icon: '{value}' is valid")
+                get_logger().debug(f"[DEBUG] _validate_selected_icon: '{value}' is valid")
                 return value
             else:
                 # Value is not in current enum items, reset to None
-                logger.debug(f"[DEBUG] _validate_selected_icon: '{value}' not in valid identifiers")
+                get_logger().debug(f"[DEBUG] _validate_selected_icon: '{value}' not in valid identifiers")
                 return None
         except Exception as e:
             # If there's any error getting enum items, reset to None
-            logger.warning(f"Error validating selected icon: {e}")
+            get_logger().warning(f"Error validating selected icon: {e}")
             return None
 
     def refresh_enum_items(self, context):
@@ -507,14 +507,14 @@ class PEXELS_State(bpy.types.PropertyGroup):
         Args:
             context: Blender context
         """
-        logger.debug("[DEBUG] refresh_enum_items called")
+        get_logger().debug("[DEBUG] refresh_enum_items called")
         try:
             # Clear the cache to force regeneration
             clear_enum_cache()
             
             # Force enum items regeneration by triggering the callback
             enum_items = pexels_enum_items(self, context)
-            logger.debug(f"[DEBUG] refresh_enum_items: regenerated {len(enum_items)} items")
+            get_logger().debug(f"[DEBUG] refresh_enum_items: regenerated {len(enum_items)} items")
 
             # If we have cached previews but no enum items, force UI refresh
             if not enum_items and self.items:
@@ -532,7 +532,7 @@ class PEXELS_State(bpy.types.PropertyGroup):
                     # Force a more aggressive refresh by temporarily changing selection
                     current_selection = self.selected_icon_storage if self.selected_icon_storage else None
                     self.selected_icon_storage = ""
-                    logger.debug(f"[DEBUG] refresh_enum_items: temporarily cleared selection, was '{current_selection}'")
+                    get_logger().debug(f"[DEBUG] refresh_enum_items: temporarily cleared selection, was '{current_selection}'")
 
                     # Small delay to ensure the change propagates
                     def delayed_refresh():
@@ -544,19 +544,19 @@ class PEXELS_State(bpy.types.PropertyGroup):
                                     valid_ids = {item[0] for item in valid_items}
                                 if current_selection in valid_ids:
                                     self.selected_icon_storage = current_selection
-                                    logger.debug(f"[DEBUG] delayed_refresh: restored selection '{current_selection}'")
+                                    get_logger().debug(f"[DEBUG] delayed_refresh: restored selection '{current_selection}'")
                                 elif valid_items:
                                     self.selected_icon_storage = valid_items[0][0]
-                                    logger.debug(f"[DEBUG] delayed_refresh: set to first item '{valid_items[0][0]}'")
+                                    get_logger().debug(f"[DEBUG] delayed_refresh: set to first item '{valid_items[0][0]}'")
                         except Exception as e:
-                            logger.warning(f"Error in delayed refresh: {e}")
+                            get_logger().warning(f"Error in delayed refresh: {e}")
                         return None  # Don't repeat timer
 
                     # Use a timer to delay the refresh slightly
                     bpy.app.timers.register(delayed_refresh, first_interval=0.01)
                     
         except Exception as e:
-            logger.warning(f"Error refreshing enum items: {e}")
+            get_logger().warning(f"Error refreshing enum items: {e}")
 
 
 class PEXELS_AddonPrefs(bpy.types.AddonPreferences):

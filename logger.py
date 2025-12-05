@@ -345,29 +345,6 @@ class Logger:
         
         return log_dir
     
-    def _get_caller_info(self) -> tuple:
-        """
-        Get caller information (module, function, line).
-        
-        Returns:
-            Tuple of (module, function, line)
-        """
-        try:
-            # Walk up the stack to find the actual caller
-            frame = sys._getframe(3)  # Skip _get_caller_info, _log, and log method
-            
-            module = frame.f_globals.get('__name__', '')
-            function = frame.f_code.co_name
-            line = frame.f_lineno
-            
-            # Simplify module name
-            if module.startswith('pexels_ext.'):
-                module = module[11:]  # Remove 'pexels_ext.' prefix
-            
-            return module, function, line
-        except Exception:
-            return "", "", 0
-    
     def _log(
         self,
         level: LogLevel,
@@ -387,16 +364,13 @@ class Logger:
         if level < self._level:
             return
         
-        # Get caller info
-        module, function, line = self._get_caller_info()
-        
         # Create log record
         record = LogRecord(
             level=level,
             message=message,
-            module=module,
-            function=function,
-            line=line,
+            module="",  # Caller info removed to avoid sys._getframe
+            function="",
+            line=0,
             context=context,
             exception=exception
         )
@@ -638,4 +612,41 @@ def get_logger() -> Logger:
 
 
 # Global logger instance
-logger = Logger()
+logger = None
+
+def get_logger() -> Logger:
+    """
+    Get the global logger instance.
+    
+    Returns:
+        Logger instance
+    """
+    global logger
+    if logger is None:
+        logger = Logger()
+    return logger
+
+# Update convenience functions to use get_logger()
+def debug(message: str, **context) -> None:
+    """Log a debug message."""
+    get_logger().debug(message, **context)
+
+def info(message: str, **context) -> None:
+    """Log an info message."""
+    get_logger().info(message, **context)
+
+def warning(message: str, **context) -> None:
+    """Log a warning message."""
+    get_logger().warning(message, **context)
+
+def error(message: str, exception: Optional[Exception] = None, **context) -> None:
+    """Log an error message."""
+    get_logger().error(message, exception=exception, **context)
+
+def critical(message: str, exception: Optional[Exception] = None, **context) -> None:
+    """Log a critical message."""
+    get_logger().critical(message, exception=exception, **context)
+
+def set_level(level: LogLevel) -> None:
+    """Set the minimum log level."""
+    get_logger().set_level(level)

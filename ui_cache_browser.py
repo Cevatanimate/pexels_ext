@@ -23,7 +23,7 @@ from bpy.props import (
 )
 
 from .models import format_bytes, format_relative_time, SortOrder
-from .logger import logger
+from . import logger
 
 
 # =============================================================================

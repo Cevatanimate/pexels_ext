@@ -578,7 +578,7 @@ class NetworkManager:
 
 
 # Global instance
-network_manager = NetworkManager()
+network_manager = None
 
 
 def get_network_manager() -> NetworkManager:
@@ -588,4 +588,7 @@ def get_network_manager() -> NetworkManager:
     Returns:
         NetworkManager instance
     """
+    global network_manager
+    if network_manager is None:
+        network_manager = NetworkManager()
     return network_manager
